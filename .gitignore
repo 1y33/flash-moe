@@ -1,0 +1,33 @@
+# Build
+build/
+*.o
+*.so
+*.a
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+
+# Virtual env
+.venv/
+
+# Torch JIT cache
+torch_extensions/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# CUDA
+*.cubin
+*.fatbin
+*.ptx
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Reference repos (not our code)
+flash-moe/
