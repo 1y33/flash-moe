@@ -5,67 +5,63 @@
 #include "worker.cu"
 
 __global__ void flash_moe_kernel(
-    float *input,
-    float *output,
-    float *ffn1_out,
     FlashMoe<float> model,
+    MoeState<float> state,
     TaskQueue<constants::CAPACITY> *task_queue,
     Doorbell *doorbells,
-    int *status_queue,
-    int *ffn1_done)
+    int *status_queue)
 {
-    if (blockIdx.x == 0)
-    {
-        OS::run(input, &model, task_queue, doorbells,
-                status_queue, ffn1_done,
+    if (blockIdx.x == 0) {
+        OS::run(state.input, &model, task_queue, doorbells,
+                status_queue, state.ffn1_done,
                 constants::NUM_WORKERS, constants::TOTAL_TASKS);
     }
-    else
-    {
+    else {
         int worker_id = blockIdx.x - 1;
-        Worker::run(worker_id, &model, input, ffn1_out, output,
-                    task_queue, doorbells, status_queue, ffn1_done);
+        Worker::run(worker_id, &model,
+                    state.input, state.ffn1_out, state.output,
+                    task_queue, doorbells, status_queue, state.ffn1_done);
     }
 }
 
-void launch_flash_moe(float *input, float *output, FlashMoe<float> &model)
-{
-    float *ffn1_out;
-    CudaAllocator::allocate(&ffn1_out,
-                            (constants::TOP_K + 1) * constants::MOE_INTERMEDIATE_SIZE);
-    cudaMemset(ffn1_out, 0,
-               (constants::TOP_K + 1) * constants::MOE_INTERMEDIATE_SIZE * sizeof(float));
+void launch_flash_moe(float *input, float *output, FlashMoe<float> &model) {
+    namespace C = constants;
 
-    TaskQueue<constants::CAPACITY> *task_queue;
+    MoeState<float> state;
+    state.input = input;
+    state.output = output;
+
+    CudaAllocator::allocate(&state.ffn1_out, C::TOP_K * C::MOE_INTERMEDIATE_SIZE);
+    CudaAllocator::allocate(&state.ffn1_done, C::TOP_K);
+
+    cudaMemset(state.ffn1_out, 0, C::TOP_K * C::MOE_INTERMEDIATE_SIZE * sizeof(float));
+    cudaMemset(output, 0, C::HIDDEN_SIZE * sizeof(float));
+
+    int ffn1_init[C::TOP_K];
+    for (int i = 0; i < C::TOP_K; i++)
+        ffn1_init[i] = C::FFN1_TILES_PER_EXPERT;
+    CudaAllocator::copy_to_device(ffn1_init, state.ffn1_done, C::TOP_K);
+
+    TaskQueue<C::CAPACITY> *task_queue;
     Doorbell *doorbells;
     int *status_queue;
-    int *ffn1_done;
 
     CudaAllocator::allocate(&task_queue, 1);
-    CudaAllocator::allocate(&doorbells, constants::NUM_WORKERS);
-    CudaAllocator::allocate(&status_queue, constants::NUM_WORKERS);
-    CudaAllocator::allocate(&ffn1_done, constants::TOP_K);
+    CudaAllocator::allocate(&doorbells, C::NUM_WORKERS);
+    CudaAllocator::allocate(&status_queue, C::NUM_WORKERS);
 
-    cudaMemset(task_queue, 0, sizeof(TaskQueue<constants::CAPACITY>));
-    cudaMemset(doorbells, 0, constants::NUM_WORKERS * sizeof(Doorbell));
-    cudaMemset(status_queue, 0, constants::NUM_WORKERS * sizeof(int));
+    cudaMemset(task_queue, 0, sizeof(TaskQueue<C::CAPACITY>));
+    cudaMemset(doorbells, 0, C::NUM_WORKERS * sizeof(Doorbell));
+    cudaMemset(status_queue, 0, C::NUM_WORKERS * sizeof(int));
 
-    int ffn1_init[constants::TOP_K];
-    for (int i = 0; i < constants::TOP_K; i++)
-        ffn1_init[i] = constants::FFN1_TILES_PER_EXPERT;
-    CudaAllocator::copy_to_device(ffn1_init, ffn1_done, constants::TOP_K);
-
-    cudaMemset(output, 0, constants::HIDDEN_SIZE * sizeof(float));
-
-    flash_moe_kernel<<<constants::BLOCKSIZE, constants::THREADS_PER_BLOCK>>>(
-        input, output, ffn1_out, model,
-        task_queue, doorbells, status_queue, ffn1_done);
+    flash_moe_kernel<<<C::BLOCKSIZE, C::THREADS_PER_BLOCK>>>(
+        model, state, task_queue, doorbells, status_queue);
 
     cudaDeviceSynchronize();
 
-    CudaAllocator::free(ffn1_out);
+    CudaAllocator::free(state.ffn1_out);
+    CudaAllocator::free(state.ffn1_done);
     CudaAllocator::free(task_queue);
     CudaAllocator::free(doorbells);
     CudaAllocator::free(status_queue);
-    CudaAllocator::free(ffn1_done);
 }

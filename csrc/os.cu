@@ -10,11 +10,16 @@ struct BootStrap {
                int *expert_ids, float *expert_weights,
                FlashMoe<float> *model)
     {
+        // gemv_tile uses all threads in the block (not just warp 0)
         flashmoe::gemv_tile<128>(
             model->router, input, logits,
             constants::HIDDEN_SIZE, 0, constants::NUM_EXPERTS);
-        __syncthreads();
+    }
 
+    static __device__ __forceinline__
+    void topk(float *logits, int *expert_ids, float *expert_weights)
+    {
+        // softmax_topk runs on warp 0 only — no syncthreads needed
         flashmoe::softmax_topk_warp<constants::NUM_EXPERTS, constants::TOP_K>(
             logits, expert_ids, expert_weights);
     }
@@ -111,19 +116,32 @@ struct OS {
         __shared__ float logits[constants::NUM_EXPERTS];
         __shared__ int   expert_ids[constants::TOP_K];
         __shared__ float expert_weights[constants::TOP_K];
+        __shared__ int   bootstrap_done;
 
+        if (threadIdx.x == 0)
+            bootstrap_done = 0;
+
+        // Phase 1: ALL threads do the router GEMV (needs full block)
+        BootStrap::route(input, logits, expert_ids, expert_weights, model);
+        __syncthreads();  // safe: all threads participate
+
+        // Phase 2: warp 0 does topk + dispatch, warp 1 waits then schedules
         int warp_id = threadIdx.x / 32;
 
         if (warp_id == 0) {
-            BootStrap::route(input, logits, expert_ids, expert_weights, model);
-            __syncthreads();
+            BootStrap::topk(logits, expert_ids, expert_weights);
+            __syncwarp();  // ensure topk results visible within warp 0
             BootStrap::dispatch(task_queue, expert_ids, expert_weights);
-        }
-        else if (warp_id == 1) {
-            if (threadIdx.x == 32) {
-                Scheduler::run(task_queue, doorbells, status_queue,
-                               num_workers, total_tasks);
+            if (threadIdx.x == 0) {
+                __threadfence();
+                atomicExch(&bootstrap_done, 1);
             }
+        }
+        else if (warp_id == 1 && threadIdx.x == 32) {
+            // Wait for bootstrap to finish pushing tasks
+            while (atomicAdd(&bootstrap_done, 0) == 0) {}
+            Scheduler::run(task_queue, doorbells, status_queue,
+                           num_workers, total_tasks);
         }
     }
 };

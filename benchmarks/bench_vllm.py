@@ -5,6 +5,9 @@ Run:  .venv/bin/python -m benchmarks.bench_vllm
 
 from __future__ import annotations
 
+import sys, os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import time
 import torch
 from benchmarks.vllm_utils import (

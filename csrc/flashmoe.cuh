@@ -5,12 +5,7 @@ namespace constants
 {
 
     constexpr int BLOCKSIZE = 46;
-    constexpr int CAPACITY = 128;
-
-    __device__ __forceinline__ int is_scheduler()
-    {
-        return blockIdx.x % BLOCKSIZE;
-    }
+    constexpr int CAPACITY = 512;
 
     constexpr int HIDDEN_SIZE = 2048;
     constexpr int MOE_INTERMEDIATE_SIZE = 768;
@@ -24,7 +19,7 @@ namespace constants
 
     constexpr int TILE_ROWS = 96;
     constexpr int FFN1_TILES_PER_EXPERT = MOE_INTERMEDIATE_SIZE / TILE_ROWS; // 8
-    constexpr int FFN2_TILES_PER_EXPERT = HIDDEN_SIZE / TILE_ROWS;           // ~21
+    constexpr int FFN2_TILES_PER_EXPERT = (HIDDEN_SIZE + TILE_ROWS - 1) / TILE_ROWS; // 22
 
     constexpr int NUM_WORKERS = BLOCKSIZE - 1; // 45
     constexpr int THREADS_PER_BLOCK = 128;
@@ -46,4 +41,13 @@ struct FlashMoe
 {
     ExpertFFN<T> experts[constants::NUM_EXPERTS];
     T *router;
+};
+
+template <typename T>
+struct MoeState
+{
+    T    *input;       
+    T    *output;      // [H] final result 
+    T    *ffn1_out;    // [TOP_K 
+    int  *ffn1_done;   // [TOP_K] fan-
 };

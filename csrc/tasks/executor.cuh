@@ -15,19 +15,19 @@ struct FFN1Executor {
         int eid = task.expert_id;
         float *act = ffn1_out + task.slot * constants::MOE_INTERMEDIATE_SIZE;
 
-        // gate GEMV: gate_buf[row_begin..+row_count] = gate_proj[row_begin:row_count, :] @ input
+        // Use shared memory for up results — private to this block, no cross-worker collision
+        __shared__ float up_smem[constants::TILE_ROWS];
+
+        // gate GEMV: act[row_begin..+row_count] = gate_proj[row_begin:row_count, :] @ input
         flashmoe::gemv_tile<128>(
             model->experts[eid].gate_proj, input, act,
             constants::HIDDEN_SIZE,
             task.row_begin, task.row_count);
 
-        // We need a separate buffer for up results before silu_mul.
-        // Reuse the tail of ffn1_out as scratch (slot TOP_K is unused).
-        float *up_scratch = ffn1_out + constants::TOP_K * constants::MOE_INTERMEDIATE_SIZE
-                            + task.row_begin;
-
+        // up GEMV into shared memory
+        // gemv_tile writes to y[row_begin..row_begin+row_count], so offset the pointer
         flashmoe::gemv_tile<128>(
-            model->experts[eid].up_proj, input, up_scratch - task.row_begin,
+            model->experts[eid].up_proj, input, up_smem - task.row_begin,
             constants::HIDDEN_SIZE,
             task.row_begin, task.row_count);
 
@@ -37,7 +37,7 @@ struct FFN1Executor {
         for (int j = threadIdx.x; j < task.row_count; j += blockDim.x) {
             int r = task.row_begin + j;
             float g = act[r];
-            float u = up_scratch[j];
+            float u = up_smem[j];
             act[r] = flashmoe::silu(g) * u;
         }
     }
