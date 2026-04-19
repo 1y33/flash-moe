@@ -7,7 +7,7 @@
 
 #include <cstdio>
 #include <cuda_runtime.h>
-#include "../csrc/allocator.cu"
+#include "../csrc/utils/allocator.cuh"
 #include "../csrc/flashmoe.cuh"
 #include "../csrc/queue.cu"
 

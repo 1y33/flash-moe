@@ -8,7 +8,7 @@
 
 #include <cstdio>
 #include <cmath>
-#include "../csrc/allocator.cu"
+#include "../csrc/utils/allocator.cuh"
 #include "../csrc/tasks/ffn.cuh"
 #include "bench.cuh"
 

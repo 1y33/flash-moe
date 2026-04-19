@@ -1,6 +1,6 @@
 #pragma once
 #include <cuda_runtime.h>
-
+#include "../utils/dtypes.cuh"
 
 namespace flashmoe
 {
@@ -10,36 +10,36 @@ namespace flashmoe
         return x / (1.0f + __expf(-x));
     }
 
-    template <int THREADS_PER_BLOCK = 128>
+    template <typename T, int THREADS_PER_BLOCK = 128>
     __device__ __forceinline__ void silu_mul_tile(
-        const float *__restrict__ gate,
-        const float *__restrict__ up,
-        float       *__restrict__ out,
+        const T *__restrict__ gate,
+        const T *__restrict__ up,
+        T       *__restrict__ out,
         int I)
     {
-        const int I4 = I >> 2;
-        const float4 *g4 = reinterpret_cast<const float4 *>(gate);
-        const float4 *u4 = reinterpret_cast<const float4 *>(up);
-        float4 *o4 = reinterpret_cast<float4 *>(out);
+        using D = DType<T>;
+        constexpr int VEC = D::VEC;
+        const int I_VEC = I / VEC;
 
-        for (int j = threadIdx.x; j < I4; j += THREADS_PER_BLOCK)
+        for (int j = threadIdx.x; j < I_VEC; j += THREADS_PER_BLOCK)
         {
-            float4 g = g4[j];
-            float4 u = u4[j];
-            float4 r;
-            r.x = silu(g.x) * u.x;
-            r.y = silu(g.y) * u.y;
-            r.z = silu(g.z) * u.z;
-            r.w = silu(g.w) * u.w;
-            o4[j] = r;
+            float g[VEC], u[VEC], r[VEC];
+            D::load_vec(gate + j * VEC, g);
+            D::load_vec(up   + j * VEC, u);
+
+            #pragma unroll
+            for (int i = 0; i < VEC; i++)
+                r[i] = silu(g[i]) * u[i];
+
+            D::store_vec(out + j * VEC, r);
         }
     }
 
-    template <int THREADS_PER_BLOCK = 128>
+    template <typename T, int THREADS_PER_BLOCK = 128>
     __global__ void silu_mul_kernel(
-        const float *gate, const float *up, float *out, int I)
+        const T *gate, const T *up, T *out, int I)
     {
-        silu_mul_tile<THREADS_PER_BLOCK>(gate, up, out, I);
+        silu_mul_tile<T, THREADS_PER_BLOCK>(gate, up, out, I);
     }
 
 } // namespace flashmoe

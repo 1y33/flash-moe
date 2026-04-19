@@ -5,7 +5,7 @@
 
 #include <cstdio>
 #include <cuda_runtime.h>
-#include "../csrc/allocator.cu"
+#include "../csrc/utils/allocator.cuh"
 #include "../csrc/queue.cu"
 
 // Test 1: single-producer push, single-consumer pop

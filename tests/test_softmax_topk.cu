@@ -10,7 +10,7 @@
 #include <cmath>
 #include <algorithm>
 #include <vector>
-#include "../csrc/allocator.cu"
+#include "../csrc/utils/allocator.cuh"
 #include "../csrc/tasks/softmax_topk.cuh"
 #include "bench.cuh"
 

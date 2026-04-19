@@ -5,35 +5,30 @@
 #include "gemv.cuh"
 #include "silu_mul.cuh"
 
-// FFN1: gate GEMV + up GEMV + silu_mul for a row tile range
-// Writes activation into ffn1_out[slot * I + row_begin .. + row_count]
+template <typename T>
 struct FFN1Executor {
     static __device__ __forceinline__
-    void execute(Task &task, FlashMoe<float> *model,
-                 float *input, float *ffn1_out)
+    void execute(Task &task, FlashMoe<T> *model,
+                 T *input, float *ffn1_out)
     {
         int eid = task.expert_id;
         float *act = ffn1_out + task.slot * constants::MOE_INTERMEDIATE_SIZE;
 
-        // Use shared memory for up results — private to this block, no cross-worker collision
         __shared__ float up_smem[constants::TILE_ROWS];
 
-        // gate GEMV: act[row_begin..+row_count] = gate_proj[row_begin:row_count, :] @ input
-        flashmoe::gemv_tile<128>(
+        flashmoe::gemv_tile<T, 128>(
             model->experts[eid].gate_proj, input, act,
             constants::HIDDEN_SIZE,
             task.row_begin, task.row_count);
 
-        // up GEMV into shared memory
-        // gemv_tile writes to y[row_begin..row_begin+row_count], so offset the pointer
-        flashmoe::gemv_tile<128>(
+        flashmoe::gemv_tile<T, 128>(
             model->experts[eid].up_proj, input, up_smem - task.row_begin,
             constants::HIDDEN_SIZE,
             task.row_begin, task.row_count);
 
         __syncthreads();
 
-        // silu_mul for our row range: act[r] = silu(gate[r]) * up[r]
+        // silu(gate) * up, in-place on act
         for (int j = threadIdx.x; j < task.row_count; j += blockDim.x) {
             int r = task.row_begin + j;
             float g = act[r];
@@ -42,7 +37,6 @@ struct FFN1Executor {
         }
     }
 
-    // Fan-in check + push FFN2 children
     static __device__ __forceinline__
     bool on_complete(Task &task, int *ffn1_done) {
         return atomicSub(&ffn1_done[task.slot], 1) == 1;
@@ -70,16 +64,20 @@ struct FFN1Executor {
 
 // FFN2: down GEMV with accumulate for a row tile range
 // output[row_begin..+row_count] += weight * down_proj[row_begin:row_count, :] @ act
+// down_proj is T, act (ffn1_out) is float, output is float
+template <typename T>
 struct FFN2Executor {
     static __device__ __forceinline__
-    void execute(Task &task, FlashMoe<float> *model,
+    void execute(Task &task, FlashMoe<T> *model,
                  float *ffn1_out, float *output)
     {
         int eid = task.expert_id;
         float *act = ffn1_out + task.slot * constants::MOE_INTERMEDIATE_SIZE;
 
-        flashmoe::gemv_tile_accumulate<128>(
-            model->experts[eid].down_proj, act, output,
+        // TODO: when T != float, need mixed-type GEMV (A=T, x=float)
+        // For now works correctly when T=float
+        flashmoe::gemv_tile_accumulate<float, 128>(
+            reinterpret_cast<const float *>(model->experts[eid].down_proj), act, output,
             constants::MOE_INTERMEDIATE_SIZE,
             task.row_begin, task.row_count,
             task.weight);
@@ -87,6 +85,5 @@ struct FFN2Executor {
 
     static __device__ __forceinline__
     void on_complete(Task &task) {
-        // nothing for now — could track total completion here
     }
 };

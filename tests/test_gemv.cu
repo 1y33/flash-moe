@@ -8,7 +8,7 @@
 
 #include <cstdio>
 #include <cmath>
-#include "../csrc/allocator.cu"
+#include "../csrc/utils/allocator.cuh"
 #include "../csrc/tasks/gemv.cuh"
 #include "bench.cuh"
 
@@ -51,12 +51,12 @@ static void run_case(const char *name, int M, int N, int nruns)
     dim3 grid((M + WARPS - 1) / WARPS);
 
     // warmup
-    gemv_kernel<TPB><<<grid, block>>>(dA, dx, dy, M, N);
+    gemv_kernel<float, TPB><<<grid, block>>>(dA, dx, dy, M, N);
     cudaDeviceSynchronize();
 
     GpuTimer t; t.begin();
     for (int r = 0; r < nruns; ++r)
-        gemv_kernel<TPB><<<grid, block>>>(dA, dx, dy, M, N);
+        gemv_kernel<float, TPB><<<grid, block>>>(dA, dx, dy, M, N);
     t.end();
 
     CudaAllocator::copy_to_host(dy, hy, M);

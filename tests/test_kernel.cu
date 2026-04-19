@@ -7,30 +7,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cuda_runtime.h>
-#include "../csrc/flashmoe.cuh"
-#include "../csrc/allocator.cu"
-#include "../csrc/os.cu"
-#include "../csrc/worker.cu"
-
-__global__ void flash_moe_kernel(
-    FlashMoe<float> model,
-    MoeState<float> state,
-    TaskQueue<constants::CAPACITY> *task_queue,
-    Doorbell *doorbells,
-    int *status_queue)
-{
-    if (blockIdx.x == 0) {
-        OS::run(state.input, &model, task_queue, doorbells,
-                status_queue, state.ffn1_done,
-                constants::NUM_WORKERS, constants::TOTAL_TASKS);
-    }
-    else {
-        int worker_id = blockIdx.x - 1;
-        Worker::run(worker_id, &model,
-                    state.input, state.ffn1_out, state.output,
-                    task_queue, doorbells, status_queue, state.ffn1_done);
-    }
-}
+#include "../csrc/kernel.cu"
 
 int main() {
     namespace C = constants;
@@ -104,7 +81,7 @@ int main() {
     cudaMemset(status_queue, 0, C::NUM_WORKERS * sizeof(int));
 
     printf("Launching kernel...\n");
-    flash_moe_kernel<<<C::BLOCKSIZE, C::THREADS_PER_BLOCK>>>(
+    flash_moe_kernel<float><<<C::BLOCKSIZE, C::THREADS_PER_BLOCK>>>(
         model, state, task_queue, doorbells, status_queue);
 
     cudaError_t err = cudaDeviceSynchronize();

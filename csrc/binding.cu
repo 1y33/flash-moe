@@ -1,9 +1,10 @@
 #include <torch/extension.h>
 #include "flashmoe.cuh"
-#include "allocator.cu"
+#include "utils/allocator.cuh"
 #include "queue.cu"
 
-void launch_flash_moe(float *input, float *output, FlashMoe<float> &model);
+template <typename T>
+void launch_flash_moe(T *input, float *output, FlashMoe<T> &model);
 
 torch::Tensor flash_moe_forward(
     torch::Tensor input,

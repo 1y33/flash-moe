@@ -1,33 +1,35 @@
 #include <cuda_runtime.h>
 #include "flashmoe.cuh"
-#include "allocator.cu"
+#include "utils/allocator.cuh"
 #include "os.cu"
 #include "worker.cu"
 
+template <typename T>
 __global__ void flash_moe_kernel(
-    FlashMoe<float> model,
-    MoeState<float> state,
+    FlashMoe<T> model,
+    MoeState<T> state,
     TaskQueue<constants::CAPACITY> *task_queue,
     Doorbell *doorbells,
     int *status_queue)
 {
     if (blockIdx.x == 0) {
-        OS::run(state.input, &model, task_queue, doorbells,
+        OS<T>::run(state.input, &model, task_queue, doorbells,
                 status_queue, state.ffn1_done,
                 constants::NUM_WORKERS, constants::TOTAL_TASKS);
     }
     else {
         int worker_id = blockIdx.x - 1;
-        Worker::run(worker_id, &model,
+        Worker<T>::run(worker_id, &model,
                     state.input, state.ffn1_out, state.output,
                     task_queue, doorbells, status_queue, state.ffn1_done);
     }
 }
 
-void launch_flash_moe(float *input, float *output, FlashMoe<float> &model) {
+template <typename T>
+void launch_flash_moe(T *input, float *output, FlashMoe<T> &model) {
     namespace C = constants;
 
-    MoeState<float> state;
+    MoeState<T> state;
     state.input = input;
     state.output = output;
 
@@ -54,7 +56,7 @@ void launch_flash_moe(float *input, float *output, FlashMoe<float> &model) {
     cudaMemset(doorbells, 0, C::NUM_WORKERS * sizeof(Doorbell));
     cudaMemset(status_queue, 0, C::NUM_WORKERS * sizeof(int));
 
-    flash_moe_kernel<<<C::BLOCKSIZE, C::THREADS_PER_BLOCK>>>(
+    flash_moe_kernel<T><<<C::BLOCKSIZE, C::THREADS_PER_BLOCK>>>(
         model, state, task_queue, doorbells, status_queue);
 
     cudaDeviceSynchronize();

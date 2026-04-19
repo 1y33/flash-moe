@@ -6,8 +6,8 @@ namespace constants
 
     constexpr int BLOCKSIZE = 46;
     constexpr int CAPACITY = 512;
-
     constexpr int HIDDEN_SIZE = 2048;
+
     constexpr int MOE_INTERMEDIATE_SIZE = 768;
     constexpr int NUM_EXPERTS = 128;
     constexpr int TOP_K = 8;
@@ -46,8 +46,8 @@ struct FlashMoe
 template <typename T>
 struct MoeState
 {
-    T    *input;       
-    T    *output;      // [H] final result 
-    T    *ffn1_out;    // [TOP_K 
-    int  *ffn1_done;   // [TOP_K] fan-
+    T     *input;       // [H] in storage type
+    float *output;      // [H] final result (always fp32, accumulate target)
+    float *ffn1_out;    // [TOP_K * I] intermediate activations (always fp32)
+    int   *ffn1_done;   // [TOP_K] fan-in counters
 };

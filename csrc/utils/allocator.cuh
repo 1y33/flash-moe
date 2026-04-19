@@ -1,7 +1,7 @@
 #pragma once
 #include <cuda_runtime.h>
 #include <cstdlib>
-#include "flashmoe.cuh"
+#include "../flashmoe.cuh"
 
 struct CudaAllocator{
     template <typename T>

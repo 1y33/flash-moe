@@ -4,7 +4,7 @@
 
 #include <cstdio>
 #include <cmath>
-#include "../csrc/allocator.cu"
+#include "../csrc/utils/allocator.cuh"
 #include "../csrc/tasks/silu_mul.cuh"
 #include "bench.cuh"
 
@@ -43,13 +43,13 @@ int main()
     CudaAllocator::copy_to_device(hg, dg, I);
     CudaAllocator::copy_to_device(hu, du, I);
 
-    silu_mul_kernel<TPB><<<1, TPB>>>(dg, du, dout, I);
+    silu_mul_kernel<float, TPB><<<1, TPB>>>(dg, du, dout, I);
     cudaDeviceSynchronize();
 
     int nruns = 1000;
     GpuTimer t; t.begin();
     for (int r = 0; r < nruns; ++r)
-        silu_mul_kernel<TPB><<<1, TPB>>>(dg, du, dout, I);
+        silu_mul_kernel<float, TPB><<<1, TPB>>>(dg, du, dout, I);
     t.end();
 
     CudaAllocator::copy_to_host(dout, ho, I);

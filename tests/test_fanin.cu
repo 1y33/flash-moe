@@ -6,7 +6,7 @@
 
 #include <cstdio>
 #include <cuda_runtime.h>
-#include "../csrc/allocator.cu"
+#include "../csrc/utils/allocator.cuh"
 
 constexpr int N_PARENTS = 8;
 

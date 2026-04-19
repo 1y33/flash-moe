@@ -3,6 +3,7 @@
 #include "flashmoe.cuh"
 #include "tasks/executor.cuh"
 
+template <typename T>
 struct Worker
 {
     static __device__ __forceinline__ int wait_for_doorbell(int worker_id, Doorbell *doorbells)
@@ -27,34 +28,36 @@ struct Worker
         atomicExch(&status_queue[worker_id], PROC_READY);
     }
 
-
-    static __device__ __forceinline__ void route_task(Task &task, FlashMoe<float> *model,
-                                                      float *input, float *ffn1_out, float *output,
+    static __device__ __forceinline__ void route_task(Task &task, FlashMoe<T> *model,
+                                                      T *input, float *ffn1_out, float *output,
                                                       int *ffn1_done, TaskQueue<constants::CAPACITY> *task_queue)
     {
         switch (task.type)
         {
-        case FFN1:
-            FFN1Executor::execute(task, model, input, ffn1_out);
+   
+            case FFN1:
+            FFN1Executor<T>::execute(task, model, input, ffn1_out);
             __threadfence();
-            if (threadIdx.x == 0 && FFN1Executor::on_complete(task, ffn1_done))
+            if (threadIdx.x == 0 && FFN1Executor<T>::on_complete(task, ffn1_done))
             {
-                FFN1Executor::push_next(task, task_queue);
+                FFN1Executor<T>::push_next(task, task_queue);
             }
             break;
+
         case FFN2:
-            FFN2Executor::execute(task, model, ffn1_out, output);
+        
+            FFN2Executor<T>::execute(task, model, ffn1_out, output);
             __threadfence();
             if (threadIdx.x == 0)
             {
-                FFN2Executor::on_complete(task);
+                FFN2Executor<T>::on_complete(task);
             }
             break;
         }
     }
 
-    static __device__ __forceinline__ void run(int worker_id, FlashMoe<float> *model,
-                                               float *input, float *ffn1_out, float *output,
+    static __device__ __forceinline__ void run(int worker_id, FlashMoe<T> *model,
+                                               T *input, float *ffn1_out, float *output,
                                                TaskQueue<constants::CAPACITY> *task_queue,
                                                Doorbell *doorbells, int *status_queue, int *ffn1_done)
     {
