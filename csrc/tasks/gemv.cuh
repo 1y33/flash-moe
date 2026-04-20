@@ -6,7 +6,7 @@
 namespace flashmoe
 {
 
-    template <typename T, int THREADS_PER_BLOCK = 128>
+    template <typename T, int THREADS_PER_BLOCK = 128, int ILP = 4>
     __device__ __forceinline__ void gemv_tile(
         const T *__restrict__ A,
         const T *__restrict__ x,
@@ -23,27 +23,42 @@ namespace flashmoe
         const int lane = warp::lane_id();
         const int N_VEC = N / VEC;
 
-        for (int r = wid; r < row_count; r += WARPS_PER_BLOCK)
+        for (int r_base = wid * ILP; r_base < row_count; r_base += WARPS_PER_BLOCK * ILP)
         {
-            int row = row_begin + r;
-            float acc = 0.0f;
+            float acc[ILP];
+            #pragma unroll
+            for (int i = 0; i < ILP; i++) acc[i] = 0.0f;
 
-#pragma unroll 4
+            #pragma unroll 4
             for (int j = lane; j < N_VEC; j += warp::SIZE)
             {
-                float a[VEC], b[VEC];
-                D::load_vec(A + (size_t)row * N + j * VEC, a);
+                float b[VEC];
                 D::load_vec(x + j * VEC, b);
-                acc += D::dot(a, b);
+
+                #pragma unroll
+                for (int i = 0; i < ILP; i++)
+                {
+                    if (r_base + i < row_count) {
+                        float a[VEC];
+                        D::load_vec(A + (size_t)(row_begin + r_base + i) * N + j * VEC, a);
+                        acc[i] += D::dot(a, b);
+                    }
+                }
             }
 
-            acc = warp::reduce_sum(acc);
-            if (lane == 0)
-                y[row] = acc;
+            #pragma unroll
+            for (int i = 0; i < ILP; i++)
+            {
+                if (r_base + i < row_count) {
+                    acc[i] = warp::reduce_sum(acc[i]);
+                    if (lane == 0)
+                        y[row_begin + r_base + i] = acc[i];
+                }
+            }
         }
     }
 
-    template <typename T, int THREADS_PER_BLOCK = 128>
+    template <typename T, int THREADS_PER_BLOCK = 128, int ILP = 4>
     __device__ __forceinline__ void gemv_tile_accumulate(
         const T *__restrict__ A,
         const T *__restrict__ x,
@@ -61,23 +76,99 @@ namespace flashmoe
         const int lane = warp::lane_id();
         const int N_VEC = N / VEC;
 
-        for (int r = wid; r < row_count; r += WARPS_PER_BLOCK)
+        for (int r_base = wid * ILP; r_base < row_count; r_base += WARPS_PER_BLOCK * ILP)
         {
-            int row = row_begin + r;
-            float acc = 0.0f;
+            float acc[ILP];
+            #pragma unroll
+            for (int i = 0; i < ILP; i++) acc[i] = 0.0f;
 
-#pragma unroll 4
+            #pragma unroll 4
             for (int j = lane; j < N_VEC; j += warp::SIZE)
             {
-                float a[VEC], b[VEC];
-                D::load_vec(A + (size_t)row * N + j * VEC, a);
+                float b[VEC];
                 D::load_vec(x + j * VEC, b);
-                acc += D::dot(a, b);
+
+                #pragma unroll
+                for (int i = 0; i < ILP; i++)
+                {
+                    if (r_base + i < row_count) {
+                        float a[VEC];
+                        D::load_vec(A + (size_t)(row_begin + r_base + i) * N + j * VEC, a);
+                        acc[i] += D::dot(a, b);
+                    }
+                }
             }
 
-            acc = warp::reduce_sum(acc);
-            if (lane == 0)
-                y[row] += scale * acc;
+            #pragma unroll
+            for (int i = 0; i < ILP; i++)
+            {
+                if (r_base + i < row_count) {
+                    acc[i] = warp::reduce_sum(acc[i]);
+                    if (lane == 0)
+                        y[row_begin + r_base + i] += scale * acc[i];
+                }
+            }
+        }
+    }
+
+    // Fused gate+up: read x once, compute both projections
+    template <typename T, int THREADS_PER_BLOCK = 128, int ILP = 4>
+    __device__ __forceinline__ void gemv_tile_fused_gate_up(
+        const T *__restrict__ A_gate,
+        const T *__restrict__ A_up,
+        const T *__restrict__ x,
+        float   *__restrict__ y_gate,
+        float   *__restrict__ y_up,
+        int N,
+        int row_begin,
+        int row_count)
+    {
+        using D = DType<T>;
+        constexpr int VEC = D::VEC;
+        constexpr int WARPS_PER_BLOCK = THREADS_PER_BLOCK / warp::SIZE;
+
+        const int wid  = warp::warp_id();
+        const int lane = warp::lane_id();
+        const int N_VEC = N / VEC;
+
+        for (int r_base = wid * ILP; r_base < row_count; r_base += WARPS_PER_BLOCK * ILP)
+        {
+            float acc_g[ILP], acc_u[ILP];
+            #pragma unroll
+            for (int i = 0; i < ILP; i++) { acc_g[i] = 0.0f; acc_u[i] = 0.0f; }
+
+            #pragma unroll 4
+            for (int j = lane; j < N_VEC; j += warp::SIZE)
+            {
+                float b[VEC];
+                D::load_vec(x + j * VEC, b);
+
+                #pragma unroll
+                for (int i = 0; i < ILP; i++)
+                {
+                    if (r_base + i < row_count) {
+                        size_t off = (size_t)(row_begin + r_base + i) * N + j * VEC;
+                        float ag[VEC], au[VEC];
+                        D::load_vec(A_gate + off, ag);
+                        D::load_vec(A_up   + off, au);
+                        acc_g[i] += D::dot(ag, b);
+                        acc_u[i] += D::dot(au, b);
+                    }
+                }
+            }
+
+            #pragma unroll
+            for (int i = 0; i < ILP; i++)
+            {
+                if (r_base + i < row_count) {
+                    acc_g[i] = warp::reduce_sum(acc_g[i]);
+                    acc_u[i] = warp::reduce_sum(acc_u[i]);
+                    if (lane == 0) {
+                        y_gate[row_begin + r_base + i] = acc_g[i];
+                        y_up[row_begin + r_base + i]   = acc_u[i];
+                    }
+                }
+            }
         }
     }
 
@@ -93,7 +184,7 @@ namespace flashmoe
         int row_count = min(WARPS_PER_BLOCK, M - row_begin);
         if (row_count <= 0)
             return;
-        gemv_tile<T, THREADS_PER_BLOCK>(A, x, y, N, row_begin, row_count);
+        gemv_tile<T, THREADS_PER_BLOCK, 1>(A, x, y, N, row_begin, row_count);
     }
 
 } // namespace flashmoe

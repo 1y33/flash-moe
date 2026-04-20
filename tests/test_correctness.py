@@ -42,6 +42,8 @@ def check_correctness(vllm_out, our_out, atol=0.05):
 
     print(f"vLLM output norm:  {vllm_f32.norm().item():.6f}")
     print(f"Our output norm:   {our_f32.norm().item():.6f}")
+    print(f"vLLM[:8]:  {vllm_f32[:8].tolist()}")
+    print(f"Ours[:8]:  {our_f32[:8].tolist()}")
     print(f"Max abs diff:      {abs_diff.max().item():.6f}")
     print(f"Mean abs diff:     {abs_diff.mean().item():.6f}")
     print(f"Max rel diff:      {rel_diff.max().item():.6f}")

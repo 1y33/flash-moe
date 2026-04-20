@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>GPU Trace Viewer</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #1a1a2e; color: #e0e0e0; font-family: 'Consolas', 'Monaco', monospace; }
+#header { padding: 10px 16px; background: #16213e; border-bottom: 1px solid #0f3460; display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+#header h1 { font-size: 15px; color: #e94560; }
+#header label { font-size: 12px; }
+#header select, #header input[type=file] { font-size: 12px; background: #0f3460; color: #e0e0e0; border: 1px solid #533483; padding: 4px 8px; border-radius: 3px; }
+#info { padding: 6px 16px; font-size: 11px; background: #16213e; border-bottom: 1px solid #0f3460; color: #888; }
+#canvas-wrap { position: relative; overflow: hidden; }
+canvas { display: block; cursor: crosshair; }
+#tooltip { position: absolute; display: none; background: rgba(15,52,96,0.95); border: 1px solid #533483; padding: 6px 10px; font-size: 11px; border-radius: 4px; pointer-events: none; white-space: pre; z-index: 10; color: #e0e0e0; }
+#legend { padding: 8px 16px; background: #16213e; border-top: 1px solid #0f3460; display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+.legend-item { display: flex; align-items: center; gap: 4px; font-size: 11px; cursor: pointer; user-select: none; padding: 2px 6px; border-radius: 3px; }
+.legend-item:hover { background: rgba(255,255,255,0.05); }
+.legend-item.off { opacity: 0.3; }
+.legend-swatch { width: 14px; height: 14px; border-radius: 2px; flex-shrink: 0; }
+.legend-swatch.group { background: transparent !important; border: 2px solid; }
+.legend-sep { color: #444; font-size: 11px; }
+</style>
+</head>
+<body>
+<div id="header">
+    <h1>GPU Trace Viewer</h1>
+    <input type="file" id="file-input" accept=".json">
+    <label>Group by:
+        <select id="group-mode">
+            <option value="sm_warp">SM / Warp</option>
+            <option value="block">Block</option>
+        </select>
+    </label>
+    <label>View:
+        <select id="view-mode">
+            <option value="both">Both (tasks + kernels)</option>
+            <option value="tasks">Tasks only</option>
+            <option value="kernels">Kernels only</option>
+        </select>
+    </label>
+</div>
+<div id="info">Load a trace.json file</div>
+<div id="canvas-wrap">
+    <canvas id="c"></canvas>
+    <div id="tooltip"></div>
+</div>
+<div id="legend"></div>
+
+<script>
+const GROUP_COLORS = [
+    '#6c5ce7', '#0984e3', '#00cec9', '#00b894', '#d63031',
+];
+const LEAF_COLORS = [
+    '#0984e3', '#6c5ce7', '#fdcb6e', '#00cec9', '#00b894', '#e17055', '#d63031',
+];
+
+let data = null;
+let firstLeaf = -1;
+let rows = [];
+let rowEvents = {};
+let viewStart = 0, viewEnd = 1;
+let canvas, ctx, wrap, tooltip;
+let dragging = false, dragStartX = 0, dragViewStart = 0, dragViewEnd = 0;
+let selecting = false, selX0 = 0, selX1 = 0;
+let enabledLabels = new Set();
+
+const LEFT_MARGIN = 140;
+const TOP_MARGIN = 24;
+const ROW_H = 20;
+
+function getViewMode() {
+    const el = document.getElementById('view-mode');
+    return el ? el.value : 'both';
+}
+
+function init() {
+    canvas = document.getElementById('c');
+    ctx = canvas.getContext('2d');
+    wrap = document.getElementById('canvas-wrap');
+    tooltip = document.getElementById('tooltip');
+
+    document.getElementById('file-input').addEventListener('change', loadFile);
+    document.getElementById('group-mode').addEventListener('change', regroup);
+    document.getElementById('view-mode').addEventListener('change', () => draw());
+
+    canvas.addEventListener('wheel', onWheel, { passive: false });
+    canvas.addEventListener('mousedown', onMouseDown);
+    canvas.addEventListener('mousemove', onMouseMove);
+    canvas.addEventListener('mouseup', onMouseUp);
+    canvas.addEventListener('mouseleave', () => { tooltip.style.display = 'none'; dragging = false; selecting = false; });
+    canvas.addEventListener('contextmenu', e => e.preventDefault());
+    window.addEventListener('resize', resize);
+    resize();
+}
+
+function loadFile(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = ev => {
+        data = JSON.parse(ev.target.result);
+        firstLeaf = data.first_leaf >= 0 ? data.first_leaf : -1;
+        enabledLabels = new Set();
+        for (let i = 0; i < data.labels.length; i++) enabledLabels.add(i);
+        document.getElementById('info').textContent =
+            `${data.events.length} events | Labels: ${data.labels.join(', ')}`;
+        buildLegend();
+        regroup();
+    };
+    reader.readAsText(file);
+}
+
+function isGroup(l) { return firstLeaf > 0 && l < firstLeaf; }
+
+function getColor(ev) {
+    if (isGroup(ev.l)) return GROUP_COLORS[ev.l % GROUP_COLORS.length];
+    const li = firstLeaf > 0 ? ev.l - firstLeaf : ev.l;
+    return LEAF_COLORS[li % LEAF_COLORS.length];
+}
+
+function buildLegend() {
+    const el = document.getElementById('legend');
+    el.innerHTML = '';
+    let hasG = false, hasL = false;
+    data.labels.forEach((_, i) => { if (isGroup(i)) hasG = true; else hasL = true; });
+
+    if (hasG) {
+        addSep(el, 'Tasks:');
+        data.labels.forEach((name, i) => { if (isGroup(i)) el.appendChild(mkLI(name, i, true)); });
+    }
+    if (hasL) {
+        addSep(el, '| Kernels:');
+        data.labels.forEach((name, i) => { if (!isGroup(i)) el.appendChild(mkLI(name, i, false)); });
+    }
+}
+
+function addSep(el, text) {
+    const s = document.createElement('span');
+    s.className = 'legend-sep'; s.textContent = text;
+    el.appendChild(s);
+}
+
+function mkLI(name, idx, group) {
+    const item = document.createElement('div');
+    item.className = 'legend-item' + (enabledLabels.has(idx) ? '' : ' off');
+    const color = group ? GROUP_COLORS[idx % GROUP_COLORS.length]
+                        : LEAF_COLORS[(firstLeaf > 0 ? idx - firstLeaf : idx) % LEAF_COLORS.length];
+    const cls = group ? 'legend-swatch group' : 'legend-swatch';
+    const style = group ? `border-color:${color}` : `background:${color}`;
+    item.innerHTML = `<div class="${cls}" style="${style}"></div>${name}`;
+    item.addEventListener('click', () => {
+        if (enabledLabels.has(idx)) enabledLabels.delete(idx); else enabledLabels.add(idx);
+        item.classList.toggle('off');
+        draw();
+    });
+    return item;
+}
+
+function regroup() {
+    if (!data) return;
+    const mode = document.getElementById('group-mode').value;
+    rows = []; rowEvents = {};
+    const seen = new Set();
+    for (const ev of data.events) {
+        let key, label;
+        if (mode === 'sm_warp') {
+            key = `sm${ev.sm}_w${ev.w}`; label = `SM ${ev.sm}  W${ev.w}`;
+        } else {
+            key = `b${ev.b}`; label = `Block ${ev.b}`;
+        }
+        if (!seen.has(key)) { seen.add(key); rows.push({ key, label, sm: ev.sm, w: ev.w, b: ev.b }); }
+        if (!rowEvents[key]) rowEvents[key] = [];
+        rowEvents[key].push(ev);
+    }
+    if (mode === 'sm_warp') rows.sort((a, b) => a.sm - b.sm || a.w - b.w);
+    else rows.sort((a, b) => a.b - b.b);
+
+    let tMin = Infinity, tMax = -Infinity;
+    for (const ev of data.events) {
+        if (ev.s < tMin) tMin = ev.s;
+        if (ev.e > tMax) tMax = ev.e;
+    }
+    viewStart = tMin; viewEnd = tMax;
+    resize(); draw();
+}
+
+function resize() {
+    const h = Math.max(rows.length * ROW_H + TOP_MARGIN + 20, 400);
+    canvas.width = window.innerWidth; canvas.height = h;
+    wrap.style.height = h + 'px';
+    draw();
+}
+
+function draw() {
+    if (!data) return;
+    const W = canvas.width, H = canvas.height;
+    const mode = getViewMode();
+    ctx.fillStyle = '#1a1a2e';
+    ctx.fillRect(0, 0, W, H);
+
+    const plotW = W - LEFT_MARGIN;
+    const vRange = viewEnd - viewStart || 1;
+
+    // Time axis
+    ctx.font = '10px Consolas, Monaco, monospace';
+    ctx.textAlign = 'center';
+    const tickCount = Math.max(2, Math.floor(plotW / 120));
+    for (let i = 0; i <= tickCount; i++) {
+        const t = viewStart + (vRange * i / tickCount);
+        const x = LEFT_MARGIN + (t - viewStart) / vRange * plotW;
+        ctx.fillStyle = '#282848';
+        ctx.fillRect(x, TOP_MARGIN, 1, H - TOP_MARGIN);
+        ctx.fillStyle = '#888';
+        ctx.fillText(fmtCycles(t), x, TOP_MARGIN - 6);
+    }
+
+    const showG = mode === 'tasks' || mode === 'both';
+    const showL = mode === 'kernels' || mode === 'both';
+
+    for (let r = 0; r < rows.length; r++) {
+        const y = TOP_MARGIN + r * ROW_H;
+        const row = rows[r];
+
+        if (r % 2 === 0) {
+            ctx.fillStyle = 'rgba(255,255,255,0.015)';
+            ctx.fillRect(LEFT_MARGIN, y, plotW, ROW_H);
+        }
+
+        ctx.fillStyle = '#666';
+        ctx.font = '10px Consolas, Monaco, monospace';
+        ctx.textAlign = 'right';
+        ctx.fillText(row.label, LEFT_MARGIN - 6, y + ROW_H / 2 + 4);
+
+        const evts = rowEvents[row.key];
+        if (!evts) continue;
+
+        // Pass 1: group spans — full row, border + translucent fill
+        if (showG) {
+            for (const ev of evts) {
+                if (!isGroup(ev.l) || !enabledLabels.has(ev.l)) continue;
+                const x0 = LEFT_MARGIN + (ev.s - viewStart) / vRange * plotW;
+                const x1 = LEFT_MARGIN + (ev.e - viewStart) / vRange * plotW;
+                const w = Math.max(x1 - x0, 1);
+                if (x1 < LEFT_MARGIN || x0 > W) continue;
+
+                const color = getColor(ev);
+                ctx.fillStyle = color + '18';
+                ctx.fillRect(x0, y + 1, w, ROW_H - 2);
+                ctx.strokeStyle = color;
+                ctx.lineWidth = 1.5;
+                ctx.strokeRect(x0, y + 1, w, ROW_H - 2);
+
+                // Label on top edge if wide enough and no leaves shown
+                if (!showL && w > 35) {
+                    ctx.fillStyle = color;
+                    ctx.font = '9px Consolas, Monaco, monospace';
+                    ctx.textAlign = 'left';
+                    if (ctx.measureText(ev.n).width < w - 4)
+                        ctx.fillText(ev.n, x0 + 3, y + ROW_H - 5);
+                }
+            }
+        }
+
+        // Pass 2: leaf spans — inset inside the group border
+        if (showL) {
+            for (const ev of evts) {
+                if (isGroup(ev.l) || !enabledLabels.has(ev.l)) continue;
+                const x0 = LEFT_MARGIN + (ev.s - viewStart) / vRange * plotW;
+                const x1 = LEFT_MARGIN + (ev.e - viewStart) / vRange * plotW;
+                const w = Math.max(x1 - x0, 1);
+                if (x1 < LEFT_MARGIN || x0 > W) continue;
+
+                const color = getColor(ev);
+                // Inset by 3px so the group border is visible around the fill
+                const inset = showG ? 3 : 2;
+                ctx.fillStyle = color;
+                ctx.fillRect(x0, y + inset, w, ROW_H - inset * 2);
+
+                if (w > 30) {
+                    ctx.fillStyle = '#000';
+                    ctx.font = '8px Consolas, Monaco, monospace';
+                    ctx.textAlign = 'left';
+                    if (ctx.measureText(ev.n).width < w - 4)
+                        ctx.fillText(ev.n, x0 + 2, y + ROW_H - inset - 2);
+                }
+            }
+        }
+    }
+
+    // Selection overlay
+    if (selecting) {
+        ctx.fillStyle = 'rgba(233,69,96,0.12)';
+        ctx.strokeStyle = '#e94560';
+        ctx.lineWidth = 1;
+        const x0 = Math.min(selX0, selX1), x1 = Math.max(selX0, selX1);
+        ctx.fillRect(x0, TOP_MARGIN, x1 - x0, H - TOP_MARGIN);
+        ctx.strokeRect(x0, TOP_MARGIN, x1 - x0, H - TOP_MARGIN);
+    }
+}
+
+function onWheel(e) {
+    e.preventDefault();
+    const rect = canvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const plotW = canvas.width - LEFT_MARGIN;
+    const frac = (mx - LEFT_MARGIN) / plotW;
+    if (frac < 0 || frac > 1) return;
+    const vRange = viewEnd - viewStart;
+    const pivot = viewStart + frac * vRange;
+    const zoom = e.deltaY > 0 ? 1.3 : 1 / 1.3;
+    viewStart = pivot - (pivot - viewStart) * zoom;
+    viewEnd = pivot + (viewEnd - pivot) * zoom;
+    draw();
+}
+
+function onMouseDown(e) {
+    if (e.button === 2 || e.shiftKey) {
+        dragging = true; dragStartX = e.clientX;
+        dragViewStart = viewStart; dragViewEnd = viewEnd;
+    } else {
+        selecting = true;
+        const rect = canvas.getBoundingClientRect();
+        selX0 = e.clientX - rect.left; selX1 = selX0;
+    }
+}
+
+function onMouseMove(e) {
+    const rect = canvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+
+    if (dragging) {
+        const dx = e.clientX - dragStartX;
+        const plotW = canvas.width - LEFT_MARGIN;
+        const vRange = dragViewEnd - dragViewStart;
+        const shift = -dx / plotW * vRange;
+        viewStart = dragViewStart + shift; viewEnd = dragViewEnd + shift;
+        draw(); return;
+    }
+    if (selecting) { selX1 = mx; draw(); return; }
+
+    if (mx < LEFT_MARGIN || my < TOP_MARGIN) { tooltip.style.display = 'none'; return; }
+
+    const rowIdx = Math.floor((my - TOP_MARGIN) / ROW_H);
+    if (rowIdx < 0 || rowIdx >= rows.length) { tooltip.style.display = 'none'; return; }
+
+    const row = rows[rowIdx];
+    const plotW = canvas.width - LEFT_MARGIN;
+    const vRange = viewEnd - viewStart;
+    const t = viewStart + (mx - LEFT_MARGIN) / plotW * vRange;
+
+    const evts = rowEvents[row.key] || [];
+    let leafHit = null, groupHit = null;
+    for (const ev of evts) {
+        if (!enabledLabels.has(ev.l)) continue;
+        if (t >= ev.s && t <= ev.e) {
+            if (isGroup(ev.l)) { if (!groupHit) groupHit = ev; }
+            else { if (!leafHit || (ev.e - ev.s) < (leafHit.e - leafHit.s)) leafHit = ev; }
+        }
+    }
+
+    const hit = leafHit || groupHit;
+    if (hit) {
+        const dur = hit.e - hit.s;
+        let text = `<b>${hit.n}</b>\nBlock ${hit.b}  SM ${hit.sm}  Warp ${hit.w}\n` +
+            `Start: ${hit.s.toLocaleString()} cy\nEnd:   ${hit.e.toLocaleString()} cy\nDur:   ${dur.toLocaleString()} cy`;
+        if (leafHit && groupHit)
+            text += `\n<span style="color:#888">parent: ${groupHit.n} (${(groupHit.e - groupHit.s).toLocaleString()} cy)</span>`;
+        tooltip.innerHTML = text;
+        tooltip.style.display = 'block';
+        let tx = mx + 14, ty = my + 14;
+        const W = canvas.width;
+        if (tx + tooltip.offsetWidth > W) tx = mx - tooltip.offsetWidth - 8;
+        if (ty + tooltip.offsetHeight > canvas.height) ty = my - tooltip.offsetHeight - 8;
+        tooltip.style.left = tx + 'px'; tooltip.style.top = ty + 'px';
+    } else {
+        tooltip.style.display = 'none';
+    }
+}
+
+function onMouseUp(e) {
+    if (dragging) { dragging = false; return; }
+    if (selecting) {
+        selecting = false;
+        const rect = canvas.getBoundingClientRect();
+        selX1 = e.clientX - rect.left;
+        const plotW = canvas.width - LEFT_MARGIN;
+        const vRange = viewEnd - viewStart;
+        let x0 = Math.min(selX0, selX1), x1 = Math.max(selX0, selX1);
+        if (x1 - x0 < 5) { draw(); return; }
+        const t0 = viewStart + (x0 - LEFT_MARGIN) / plotW * vRange;
+        const t1 = viewStart + (x1 - LEFT_MARGIN) / plotW * vRange;
+        viewStart = t0; viewEnd = t1; draw();
+    }
+}
+
+function fmtCycles(c) {
+    if (Math.abs(c) >= 1e6) return (c / 1e6).toFixed(1) + 'M';
+    if (Math.abs(c) >= 1e3) return (c / 1e3).toFixed(1) + 'K';
+    return c.toFixed(0);
+}
+
+init();
+</script>
+</body>
+</html>

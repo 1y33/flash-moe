@@ -87,10 +87,12 @@ struct Scheduler
                                                Doorbell *doorbells,
                                                int *status_queue,
                                                int num_workers,
-                                               int total_tasks)
+                                               int total_tasks,
+                                               DeviceTracer &tracer, long long *pending)
     {
         int scheduled = 0;
 
+        tracer.start(TR_SCHEDULE, pending);
         while (scheduled < total_tasks)
         {
             int task_idx;
@@ -101,6 +103,7 @@ struct Scheduler
             assign_task(w, task_idx, doorbells);
             scheduled++;
         }
+        tracer.stop(TR_SCHEDULE, pending);
 
         for (int w = 0; w < num_workers; w++)
         {
@@ -118,28 +121,46 @@ struct OS
                                                int *status_queue,
                                                int *ffn1_done,
                                                int num_workers,
-                                               int total_tasks)
+                                               int total_tasks,
+                                               DeviceTracer tracer, long long *pending)
     {
         __shared__ float logits[constants::NUM_EXPERTS];
         __shared__ int expert_ids[constants::TOP_K];
         __shared__ float expert_weights[constants::TOP_K];
         __shared__ int bootstrap_done;
 
+        bool is_lane0 = (threadIdx.x % 32 == 0);
+
         if (threadIdx.x == 0)
             bootstrap_done = 0;
 
+        // Outer ROUTE group span
+        if (is_lane0) tracer.start(TR_ROUTE, pending);
+
+        // Inner: GEMV_ROUTE
+        if (is_lane0) tracer.start(TR_GEMV_ROUTE, pending);
         BootStrap<T>::route(input, logits, expert_ids, expert_weights, model);
         __syncthreads();
+        if (is_lane0) tracer.stop(TR_GEMV_ROUTE, pending);
 
         int warp_id = threadIdx.x / 32;
 
         if (warp_id == 0)
         {
+            // Inner: SOFTMAX_TOPK
+            if (threadIdx.x == 0) tracer.start(TR_SOFTMAX_TOPK, pending);
             BootStrap<T>::topk(logits, expert_ids, expert_weights);
             __syncwarp();
+            if (threadIdx.x == 0) tracer.stop(TR_SOFTMAX_TOPK, pending);
+
+            // Inner: DISPATCH
+            if (threadIdx.x == 0) tracer.start(TR_DISPATCH, pending);
             BootStrap<T>::dispatch(task_queue, expert_ids, expert_weights);
             if (threadIdx.x == 0)
             {
+                tracer.stop(TR_DISPATCH, pending);
+                // Close outer ROUTE group
+                tracer.stop(TR_ROUTE, pending);
                 __threadfence();
                 atomicExch(&bootstrap_done, 1);
             }
@@ -150,7 +171,7 @@ struct OS
             {
             }
             Scheduler::run(task_queue, doorbells, status_queue,
-                           num_workers, total_tasks);
+                           num_workers, total_tasks, tracer, pending);
         }
     }
 };

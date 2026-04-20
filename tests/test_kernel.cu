@@ -80,9 +80,14 @@ int main() {
     cudaMemset(doorbells, 0, C::NUM_WORKERS * sizeof(Doorbell));
     cudaMemset(status_queue, 0, C::NUM_WORKERS * sizeof(int));
 
+    // Trace buffer
+    DeviceTracer tracer;
+    tracer.max_events = 32768;
+    TraceBuffer::allocate(&tracer.buf, &tracer.count, tracer.max_events);
+
     printf("Launching kernel...\n");
     flash_moe_kernel<float><<<C::BLOCKSIZE, C::THREADS_PER_BLOCK>>>(
-        model, state, task_queue, doorbells, status_queue);
+        model, state, task_queue, doorbells, status_queue, tracer);
 
     cudaError_t err = cudaDeviceSynchronize();
     if (err != cudaSuccess) {
@@ -106,6 +111,11 @@ int main() {
     bool nonzero = norm > 1e-6f;
     printf("\n%s (output is %s)\n", nonzero ? "PASS" : "FAIL",
            nonzero ? "nonzero" : "all zeros — something went wrong");
+
+    // Print trace + write JSON for viewer
+    TraceBuffer::print(tracer.buf, tracer.count, trace_label_names(), TR_NUM_LABELS);
+    TraceBuffer::write_json(tracer.buf, tracer.count, trace_label_names(), TR_NUM_LABELS, "trace.json", TR_FIRST_LEAF);
+    TraceBuffer::free(tracer.buf, tracer.count);
 
     // Cleanup
     free_flashmoe<float, CudaAllocator>(model);

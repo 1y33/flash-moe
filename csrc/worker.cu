@@ -30,24 +30,31 @@ struct Worker
 
     static __device__ __forceinline__ void route_task(Task &task, FlashMoe<T> *model,
                                                       T *input, float *ffn1_out, float *output,
-                                                      int *ffn1_done, TaskQueue<constants::CAPACITY> *task_queue)
+                                                      int *ffn1_done, TaskQueue<constants::CAPACITY> *task_queue,
+                                                      DeviceTracer &tracer, long long *pending)
     {
+        bool is_lane0 = (threadIdx.x % 32 == 0);
+
         switch (task.type)
         {
-   
+
             case FFN1:
-            FFN1Executor<T>::execute(task, model, input, ffn1_out);
+            if (is_lane0) tracer.start(TR_FFN1, pending);
+            FFN1Executor<T>::execute(task, model, input, ffn1_out, tracer, pending);
             __threadfence();
-            if (threadIdx.x == 0 && FFN1Executor<T>::on_complete(task, ffn1_done))
+            if (is_lane0) tracer.stop(TR_FFN1, pending);
+            if (threadIdx.x == 0)
             {
-                FFN1Executor<T>::push_next(task, task_queue);
+                if (FFN1Executor<T>::on_complete(task, ffn1_done))
+                    FFN1Executor<T>::push_next(task, task_queue);
             }
             break;
 
         case FFN2:
-        
-            FFN2Executor<T>::execute(task, model, ffn1_out, output);
+            if (is_lane0) tracer.start(TR_FFN2, pending);
+            FFN2Executor<T>::execute(task, model, ffn1_out, output, tracer, pending);
             __threadfence();
+            if (is_lane0) tracer.stop(TR_FFN2, pending);
             if (threadIdx.x == 0)
             {
                 FFN2Executor<T>::on_complete(task);
@@ -59,7 +66,8 @@ struct Worker
     static __device__ __forceinline__ void run(int worker_id, FlashMoe<T> *model,
                                                T *input, float *ffn1_out, float *output,
                                                TaskQueue<constants::CAPACITY> *task_queue,
-                                               Doorbell *doorbells, int *status_queue, int *ffn1_done)
+                                               Doorbell *doorbells, int *status_queue, int *ffn1_done,
+                                               DeviceTracer tracer, long long *pending)
     {
         __shared__ Task current_task;
 
@@ -70,7 +78,9 @@ struct Worker
         {
             if (threadIdx.x == 0)
             {
+                tracer.start(TR_WAIT, pending);
                 int signal = wait_for_doorbell(worker_id, doorbells);
+                tracer.stop(TR_WAIT, pending);
                 if (signal == 2)
                 {
                     current_task.type = (TaskType)-1;
@@ -85,7 +95,7 @@ struct Worker
             if (current_task.type == (TaskType)-1)
                 break;
 
-            route_task(current_task, model, input, ffn1_out, output, ffn1_done, task_queue);
+            route_task(current_task, model, input, ffn1_out, output, ffn1_done, task_queue, tracer, pending);
             __syncthreads();
 
             if (threadIdx.x == 0)

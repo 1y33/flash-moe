@@ -10,23 +10,29 @@ __global__ void flash_moe_kernel(
     MoeState<T> state,
     TaskQueue<constants::CAPACITY> *task_queue,
     Doorbell *doorbells,
-    int *status_queue)
+    int *status_queue,
+    DeviceTracer tracer)
 {
-    if (blockIdx.x == 0) {
+    __shared__ long long trace_pending[TRACE_MAX_WARPS];
+
+    if (blockIdx.x == 0)
+    {
         OS<T>::run(state.input, &model, task_queue, doorbells,
-                status_queue, state.ffn1_done,
-                constants::NUM_WORKERS, constants::TOTAL_TASKS);
+                   status_queue, state.ffn1_done,
+                   constants::NUM_WORKERS, constants::TOTAL_TASKS, tracer, trace_pending);
     }
-    else {
+    else
+    {
         int worker_id = blockIdx.x - 1;
         Worker<T>::run(worker_id, &model,
-                    state.input, state.ffn1_out, state.output,
-                    task_queue, doorbells, status_queue, state.ffn1_done);
+                       state.input, state.ffn1_out, state.output,
+                       task_queue, doorbells, status_queue, state.ffn1_done, tracer, trace_pending);
     }
 }
 
 template <typename T>
-void launch_flash_moe(T *input, float *output, FlashMoe<T> &model) {
+void launch_flash_moe(T *input, float *output, FlashMoe<T> &model)
+{
     namespace C = constants;
 
     MoeState<T> state;
@@ -56,10 +62,19 @@ void launch_flash_moe(T *input, float *output, FlashMoe<T> &model) {
     cudaMemset(doorbells, 0, C::NUM_WORKERS * sizeof(Doorbell));
     cudaMemset(status_queue, 0, C::NUM_WORKERS * sizeof(int));
 
+    // Trace buffer
+    DeviceTracer tracer;
+    tracer.max_events = 32768;
+    TraceBuffer::allocate(&tracer.buf, &tracer.count, tracer.max_events);
+
     flash_moe_kernel<T><<<C::BLOCKSIZE, C::THREADS_PER_BLOCK>>>(
-        model, state, task_queue, doorbells, status_queue);
+        model, state, task_queue, doorbells, status_queue, tracer);
 
     cudaDeviceSynchronize();
+
+    TraceBuffer::print(tracer.buf, tracer.count, trace_label_names(), TR_NUM_LABELS);
+    TraceBuffer::write_json(tracer.buf, tracer.count, trace_label_names(), TR_NUM_LABELS, "trace.json", TR_FIRST_LEAF);
+    TraceBuffer::free(tracer.buf, tracer.count);
 
     CudaAllocator::free(state.ffn1_out);
     CudaAllocator::free(state.ffn1_done);
@@ -67,3 +82,5 @@ void launch_flash_moe(T *input, float *output, FlashMoe<T> &model) {
     CudaAllocator::free(doorbells);
     CudaAllocator::free(status_queue);
 }
+
+template void launch_flash_moe<float>(float *, float *, FlashMoe<float> &);

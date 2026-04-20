@@ -1,5 +1,38 @@
 #pragma once
 #include <cuda_runtime.h>
+#include "utils/trace.cuh"
+
+// Trace labels for the persistent kernel
+// Group labels (rendered as bordered spans containing leaf labels)
+enum TraceLabel : int {
+    // Groups (outer spans)
+    TR_WAIT,
+    TR_FFN1,
+    TR_FFN2,
+    TR_ROUTE,
+    TR_SCHEDULE,
+    // Leaves (inner filled bars)
+    TR_GEMV_GATE,
+    TR_GEMV_UP,
+    TR_SILU_MUL,
+    TR_GEMV_DOWN,
+    TR_GEMV_ROUTE,
+    TR_SOFTMAX_TOPK,
+    TR_DISPATCH,
+    TR_NUM_LABELS
+};
+
+// Labels with index < TR_FIRST_LEAF are group spans
+constexpr int TR_FIRST_LEAF = TR_GEMV_GATE;
+
+inline const char** trace_label_names() {
+    static const char* names[] = {
+        "WAIT", "FFN1", "FFN2", "ROUTE", "SCHEDULE",
+        "GEMV_GATE", "GEMV_UP", "SILU_MUL", "GEMV_DOWN",
+        "GEMV_ROUTE", "SOFTMAX_TOPK", "DISPATCH"
+    };
+    return names;
+}
 
 namespace constants
 {
@@ -18,8 +51,8 @@ namespace constants
     constexpr size_t ROUTER_SIZE = HIDDEN_SIZE * NUM_EXPERTS;
 
     constexpr int TILE_ROWS = 96;
-    constexpr int FFN1_TILES_PER_EXPERT = MOE_INTERMEDIATE_SIZE / TILE_ROWS; // 8
-    constexpr int FFN2_TILES_PER_EXPERT = (HIDDEN_SIZE + TILE_ROWS - 1) / TILE_ROWS; // 22
+    constexpr int FFN1_TILES_PER_EXPERT = MOE_INTERMEDIATE_SIZE / TILE_ROWS; // 48
+    constexpr int FFN2_TILES_PER_EXPERT = (HIDDEN_SIZE + TILE_ROWS - 1) / TILE_ROWS; // 128
 
     constexpr int NUM_WORKERS = BLOCKSIZE - 1; // 45
     constexpr int THREADS_PER_BLOCK = 128;
