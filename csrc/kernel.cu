@@ -84,3 +84,4 @@ void launch_flash_moe(T *input, float *output, FlashMoe<T> &model)
 }
 
 template void launch_flash_moe<float>(float *, float *, FlashMoe<float> &);
+template void launch_flash_moe<__half>(__half *, float *, FlashMoe<__half> &);

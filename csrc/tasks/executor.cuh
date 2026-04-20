@@ -18,7 +18,6 @@ struct FFN1Executor {
 
         __shared__ float up_smem[constants::TILE_ROWS];
 
-        // Fused gate+up: reads input x once, computes both projections
         if (is_lane0) tracer.start(TR_GEMV_GATE, pending);
         flashmoe::gemv_tile_fused_gate_up<T, 128>(
             model->experts[eid].gate_proj,
@@ -80,8 +79,8 @@ struct FFN2Executor {
         bool is_lane0 = (threadIdx.x % 32 == 0);
 
         if (is_lane0) tracer.start(TR_GEMV_DOWN, pending);
-        flashmoe::gemv_tile_accumulate<float, 128>(
-            reinterpret_cast<const float *>(model->experts[eid].down_proj), act, output,
+        flashmoe::gemv_tile_accumulate_mixed<T, 128>(
+            model->experts[eid].down_proj, act, output,
             constants::MOE_INTERMEDIATE_SIZE,
             task.row_begin, task.row_count,
             task.weight);

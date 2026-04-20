@@ -1,5 +1,5 @@
 NVCC      = nvcc
-ARCH      = -arch=sm_89
+ARCH      = -arch=sm_89 -O3
 GTEST     = -lgtest -lgtest_main -lpthread
 BUILD_DIR = build
 
@@ -19,6 +19,9 @@ KERNEL_DEPS = tests/test_kernel.cu csrc/kernel.cu csrc/os.cu csrc/worker.cu csrc
 $(BUILD_DIR)/test_kernel: $(KERNEL_DEPS) | $(BUILD_DIR)
 	$(NVCC) $(ARCH) -o $@ $<
 
+$(BUILD_DIR)/test_kernel_fp32: $(KERNEL_DEPS) | $(BUILD_DIR)
+	$(NVCC) $(ARCH) -DMODEL_TYPE_FP32 -o $@ tests/test_kernel.cu
+
 $(BUILD_DIR)/test_kernel_trace: $(KERNEL_DEPS) | $(BUILD_DIR)
 	$(NVCC) $(ARCH) -DTRACE_ENABLED -o $@ tests/test_kernel.cu
 
@@ -36,6 +39,9 @@ $(BUILD_DIR)/test_full_debug: tests/test_full_debug.cu csrc/queue.cu csrc/utils/
 
 test_kernel: $(BUILD_DIR)/test_kernel
 	timeout 15 ./$(BUILD_DIR)/test_kernel || echo "TIMEOUT — kernel likely deadlocked"
+
+test_kernel_fp32: $(BUILD_DIR)/test_kernel_fp32
+	timeout 15 ./$(BUILD_DIR)/test_kernel_fp32 || echo "TIMEOUT — kernel likely deadlocked"
 
 test_kernel_trace: $(BUILD_DIR)/test_kernel_trace
 	timeout 15 ./$(BUILD_DIR)/test_kernel_trace || echo "TIMEOUT — kernel likely deadlocked"

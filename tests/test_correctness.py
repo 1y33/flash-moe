@@ -24,13 +24,13 @@ def build_kernel():
     return load(
         name="flash_moe_ext",
         sources=["csrc/binding.cu", "csrc/kernel.cu"],
-        extra_cuda_cflags=["-arch=sm_89", "-Icsrc"],
+        extra_cuda_cflags=["-arch=sm_89", "-O3", "-Icsrc"],
         verbose=True,
     )
 
 
-def run_our_forward(flash_moe, x_f32, router_weight, gate_projs, up_projs, down_projs):
-    return flash_moe.forward(x_f32, router_weight, gate_projs, up_projs, down_projs)
+def run_our_forward(flash_moe, x, router_weight, gate_projs, up_projs, down_projs):
+    return flash_moe.forward(x, router_weight, gate_projs, up_projs, down_projs)
 
 
 def check_correctness(vllm_out, our_out, atol=0.05):
@@ -66,7 +66,7 @@ def benchmark(flash_moe, moe, x, vllm_config, router_weight,
               gate_projs, up_projs, down_projs, warmup=10, iters=100):
     print("\n--- Benchmark ---")
 
-    x_f32 = x.squeeze(0).float()
+    x_in = x.squeeze(0)
 
     # Warmup vLLM
     for _ in range(warmup):
@@ -83,12 +83,12 @@ def benchmark(flash_moe, moe, x, vllm_config, router_weight,
 
     # Warmup ours
     for _ in range(warmup):
-        run_our_forward(flash_moe, x_f32, router_weight, gate_projs, up_projs, down_projs)
+        run_our_forward(flash_moe, x_in, router_weight, gate_projs, up_projs, down_projs)
     torch.cuda.synchronize()
 
     start.record()
     for _ in range(iters):
-        run_our_forward(flash_moe, x_f32, router_weight, gate_projs, up_projs, down_projs)
+        run_our_forward(flash_moe, x_in, router_weight, gate_projs, up_projs, down_projs)
     end.record()
     torch.cuda.synchronize()
     ours_ms = start.elapsed_time(end) / iters
@@ -119,7 +119,7 @@ def main():
 
     vllm_out = run_vllm_forward(moe, x, vllm_config)
     our_out = run_our_forward(
-        flash_moe, x.squeeze(0).float(), router_weight, gate_projs, up_projs, down_projs)
+        flash_moe, x.squeeze(0), router_weight, gate_projs, up_projs, down_projs)
 
     # 4. Correctness check
     passed = check_correctness(vllm_out, our_out)

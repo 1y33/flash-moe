@@ -172,6 +172,64 @@ namespace flashmoe
         }
     }
 
+    // Mixed-precision accumulate: A is type T (e.g. half), x is float
+    // Iterates using DType<T>::VEC for A loads, and manually loads matching floats from x
+    template <typename T, int THREADS_PER_BLOCK = 128, int ILP = 4>
+    __device__ __forceinline__ void gemv_tile_accumulate_mixed(
+        const T     *__restrict__ A,
+        const float *__restrict__ x,
+        float       *__restrict__ y,
+        int N,
+        int row_begin,
+        int row_count,
+        float scale)
+    {
+        using D = DType<T>;
+        constexpr int VEC = D::VEC;  // 8 for half, 4 for float
+        constexpr int WARPS_PER_BLOCK = THREADS_PER_BLOCK / warp::SIZE;
+
+        const int wid  = warp::warp_id();
+        const int lane = warp::lane_id();
+        const int N_VEC = N / VEC;
+
+        for (int r_base = wid * ILP; r_base < row_count; r_base += WARPS_PER_BLOCK * ILP)
+        {
+            float acc[ILP];
+            #pragma unroll
+            for (int i = 0; i < ILP; i++) acc[i] = 0.0f;
+
+            #pragma unroll 4
+            for (int j = lane; j < N_VEC; j += warp::SIZE)
+            {
+                // Load VEC floats from x
+                float b[VEC];
+                #pragma unroll
+                for (int k = 0; k < VEC; k++)
+                    b[k] = x[j * VEC + k];
+
+                #pragma unroll
+                for (int i = 0; i < ILP; i++)
+                {
+                    if (r_base + i < row_count) {
+                        float a[VEC];
+                        D::load_vec(A + (size_t)(row_begin + r_base + i) * N + j * VEC, a);
+                        acc[i] += D::dot(a, b);
+                    }
+                }
+            }
+
+            #pragma unroll
+            for (int i = 0; i < ILP; i++)
+            {
+                if (r_base + i < row_count) {
+                    acc[i] = warp::reduce_sum(acc[i]);
+                    if (lane == 0)
+                        y[row_begin + r_base + i] += scale * acc[i];
+                }
+            }
+        }
+    }
+
     template <typename T, int THREADS_PER_BLOCK = 128>
     __global__ void gemv_kernel(
         const T *__restrict__ A,

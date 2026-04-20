@@ -84,11 +84,11 @@ def extract_weights_for_kernel(gate_w, w13, w2):
     up_projs = []
     down_projs = []
     for e in range(E):
-        gate_projs.append(w13[e, :I, :].contiguous().float())
-        up_projs.append(w13[e, I:, :].contiguous().float())
-        down_projs.append(w2[e].contiguous().float())
+        gate_projs.append(w13[e, :I, :].contiguous())
+        up_projs.append(w13[e, I:, :].contiguous())
+        down_projs.append(w2[e].contiguous())
 
-    router_weight = gate_w.contiguous().float()
+    router_weight = gate_w.contiguous()
     return router_weight, gate_projs, up_projs, down_projs
 
 

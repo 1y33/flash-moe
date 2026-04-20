@@ -2,8 +2,7 @@
 #include <cuda_runtime.h>
 #include "utils/trace.cuh"
 
-// Trace labels for the persistent kernel
-// Group labels (rendered as bordered spans containing leaf labels)
+
 enum TraceLabel : int {
     // Groups (outer spans)
     TR_WAIT,
@@ -22,7 +21,6 @@ enum TraceLabel : int {
     TR_NUM_LABELS
 };
 
-// Labels with index < TR_FIRST_LEAF are group spans
 constexpr int TR_FIRST_LEAF = TR_GEMV_GATE;
 
 inline const char** trace_label_names() {

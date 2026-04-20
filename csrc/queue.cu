@@ -32,8 +32,8 @@ template <int capacity>
 struct TaskQueue
 {
     Task entry[capacity];
-    int head; 
-    int tail; 
+    int head;
+    int tail;
 
     __device__ __forceinline__ bool push(Task t)
     {
@@ -53,4 +53,3 @@ struct TaskQueue
         return true;
     }
 };
-

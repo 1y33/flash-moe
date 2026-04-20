@@ -1,63 +1,75 @@
 // Full kernel test in pure C++ — no Python, no torch, fast compile.
-// Tests the real flash_moe_kernel with small random weights.
+// Tests the real flash_moe_kernel with random weights.
 //
-// Build:  make test_kernel
+// Build:  make test_kernel       (fp16)
+//         make test_kernel_fp32  (fp32)
 // Run:    ./build/test_kernel
 
 #include <cstdio>
 #include <cstdlib>
 #include <cuda_runtime.h>
+#include <cuda_fp16.h>
 #include "../csrc/kernel.cu"
+
+// ─── Storage type: change this to switch precision ──────────
+#ifndef MODEL_TYPE_FP32
+using ModelT = __half;
+#else
+using ModelT = float;
+#endif
+
+// Helper: fill host buffer with random floats, convert to T
+template <typename T>
+static void fill_random_typed(T *dst, size_t count) {
+    for (size_t i = 0; i < count; i++)
+        dst[i] = (T)((float)rand() / (float)RAND_MAX - 0.5f);
+}
+
+template <>
+void fill_random_typed<__half>(__half *dst, size_t count) {
+    for (size_t i = 0; i < count; i++)
+        dst[i] = __float2half((float)rand() / (float)RAND_MAX - 0.5f);
+}
+
+// Helper: allocate host, fill, copy to device, free host
+template <typename T>
+static void init_random_device(T *d_ptr, size_t count) {
+    T *h_ptr = (T*)malloc(count * sizeof(T));
+    fill_random_typed(h_ptr, count);
+    cudaMemcpy(d_ptr, h_ptr, count * sizeof(T), cudaMemcpyHostToDevice);
+    free(h_ptr);
+}
 
 int main() {
     namespace C = constants;
 
-    printf("Config: H=%d I=%d E=%d K=%d\n", C::HIDDEN_SIZE, C::MOE_INTERMEDIATE_SIZE,
-           C::NUM_EXPERTS, C::TOP_K);
+    const char *type_name = sizeof(ModelT) == 2 ? "fp16" : "fp32";
+    printf("Config: H=%d I=%d E=%d K=%d  dtype=%s\n", C::HIDDEN_SIZE, C::MOE_INTERMEDIATE_SIZE,
+           C::NUM_EXPERTS, C::TOP_K, type_name);
     printf("Tiles: FFN1=%d FFN2=%d  Total tasks=%d  Capacity=%d\n",
            C::FFN1_TILES_PER_EXPERT, C::FFN2_TILES_PER_EXPERT, C::TOTAL_TASKS, C::CAPACITY);
     printf("Blocks: %d (1 OS + %d workers)\n\n", C::BLOCKSIZE, C::NUM_WORKERS);
 
-    // Allocate model weights (small random)
-    FlashMoe<float> model;
-    allocate_flashmoe<float, CudaAllocator>(model);
+    // Allocate model weights
+    FlashMoe<ModelT> model;
+    allocate_flashmoe<ModelT, CudaAllocator>(model);
 
-    // Fill with random data via host
     srand(42);
     for (int e = 0; e < C::NUM_EXPERTS; e++) {
-        float *h_gate, *h_up, *h_down;
-        HostAllocator::allocate(&h_gate, C::GATE_PROJ_SIZE);
-        HostAllocator::allocate(&h_up,   C::UP_PROJ_SIZE);
-        HostAllocator::allocate(&h_down, C::DOWN_PROJ_SIZE);
-        HostAllocator::fill_random(h_gate, C::GATE_PROJ_SIZE);
-        HostAllocator::fill_random(h_up,   C::UP_PROJ_SIZE);
-        HostAllocator::fill_random(h_down, C::DOWN_PROJ_SIZE);
-        CudaAllocator::copy_to_device(h_gate, model.experts[e].gate_proj, C::GATE_PROJ_SIZE);
-        CudaAllocator::copy_to_device(h_up,   model.experts[e].up_proj,   C::UP_PROJ_SIZE);
-        CudaAllocator::copy_to_device(h_down, model.experts[e].down_proj, C::DOWN_PROJ_SIZE);
-        HostAllocator::free(h_gate);
-        HostAllocator::free(h_up);
-        HostAllocator::free(h_down);
+        init_random_device(model.experts[e].gate_proj, C::GATE_PROJ_SIZE);
+        init_random_device(model.experts[e].up_proj,   C::UP_PROJ_SIZE);
+        init_random_device(model.experts[e].down_proj, C::DOWN_PROJ_SIZE);
     }
+    init_random_device(model.router, C::ROUTER_SIZE);
 
-    float *h_router;
-    HostAllocator::allocate(&h_router, C::ROUTER_SIZE);
-    HostAllocator::fill_random(h_router, C::ROUTER_SIZE);
-    CudaAllocator::copy_to_device(h_router, model.router, C::ROUTER_SIZE);
-    HostAllocator::free(h_router);
-
-    // Build MoeState
-    MoeState<float> state;
+    // Build MoeState (input is ModelT, intermediates/output are float)
+    MoeState<ModelT> state;
     CudaAllocator::allocate(&state.input,    C::HIDDEN_SIZE);
     CudaAllocator::allocate(&state.output,   C::HIDDEN_SIZE);
     CudaAllocator::allocate(&state.ffn1_out, C::TOP_K * C::MOE_INTERMEDIATE_SIZE);
     CudaAllocator::allocate(&state.ffn1_done, C::TOP_K);
 
-    float *h_input;
-    HostAllocator::allocate(&h_input, C::HIDDEN_SIZE);
-    HostAllocator::fill_random(h_input, C::HIDDEN_SIZE);
-    CudaAllocator::copy_to_device(h_input, state.input, C::HIDDEN_SIZE);
-    HostAllocator::free(h_input);
+    init_random_device(state.input, C::HIDDEN_SIZE);
 
     cudaMemset(state.output, 0, C::HIDDEN_SIZE * sizeof(float));
     cudaMemset(state.ffn1_out, 0, C::TOP_K * C::MOE_INTERMEDIATE_SIZE * sizeof(float));
@@ -86,7 +98,7 @@ int main() {
     TraceBuffer::allocate(&tracer.buf, &tracer.count, tracer.max_events);
 
     printf("Launching kernel...\n");
-    flash_moe_kernel<float><<<C::BLOCKSIZE, C::THREADS_PER_BLOCK>>>(
+    flash_moe_kernel<ModelT><<<C::BLOCKSIZE, C::THREADS_PER_BLOCK>>>(
         model, state, task_queue, doorbells, status_queue, tracer);
 
     cudaError_t err = cudaDeviceSynchronize();
@@ -118,7 +130,7 @@ int main() {
     TraceBuffer::free(tracer.buf, tracer.count);
 
     // Cleanup
-    free_flashmoe<float, CudaAllocator>(model);
+    free_flashmoe<ModelT, CudaAllocator>(model);
     CudaAllocator::free(state.input);
     CudaAllocator::free(state.output);
     CudaAllocator::free(state.ffn1_out);
