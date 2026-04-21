@@ -48,12 +48,20 @@ namespace constants
     constexpr size_t DOWN_PROJ_SIZE = MOE_INTERMEDIATE_SIZE * HIDDEN_SIZE;
     constexpr size_t ROUTER_SIZE = HIDDEN_SIZE * NUM_EXPERTS;
 
+#ifndef TILE_ROWS_OVERRIDE
     constexpr int TILE_ROWS = 96;
-    constexpr int FFN1_TILES_PER_EXPERT = MOE_INTERMEDIATE_SIZE / TILE_ROWS; // 48
-    constexpr int FFN2_TILES_PER_EXPERT = (HIDDEN_SIZE + TILE_ROWS - 1) / TILE_ROWS; // 128
+#else
+    constexpr int TILE_ROWS = TILE_ROWS_OVERRIDE;
+#endif
+    constexpr int FFN1_TILES_PER_EXPERT = MOE_INTERMEDIATE_SIZE / TILE_ROWS;
+    constexpr int FFN2_TILES_PER_EXPERT = (HIDDEN_SIZE + TILE_ROWS - 1) / TILE_ROWS;
 
     constexpr int NUM_WORKERS = BLOCKSIZE - 1; // 45
+#ifndef TPB_OVERRIDE
     constexpr int THREADS_PER_BLOCK = 128;
+#else
+    constexpr int THREADS_PER_BLOCK = TPB_OVERRIDE;
+#endif
     constexpr int TOTAL_TASKS =
         TOP_K * FFN1_TILES_PER_EXPERT +
         TOP_K * FFN2_TILES_PER_EXPERT;

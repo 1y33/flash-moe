@@ -11,7 +11,7 @@ struct BootStrap
                                                  int *expert_ids, float *expert_weights,
                                                  FlashMoe<T> *model)
     {
-        flashmoe::gemv_tile<T, 128>(
+        flashmoe::gemv_tile<T, constants::THREADS_PER_BLOCK>(
             model->router, input, logits,
             constants::HIDDEN_SIZE, 0, constants::NUM_EXPERTS);
     }

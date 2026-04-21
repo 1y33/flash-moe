@@ -19,7 +19,7 @@ struct FFN1Executor {
         __shared__ float up_smem[constants::TILE_ROWS];
 
         if (is_lane0) tracer.start(TR_GEMV_GATE, pending);
-        flashmoe::gemv_tile_fused_gate_up_prefetch<T, 128>(
+        flashmoe::gemv_tile_fused_gate_up_prefetch<T, constants::THREADS_PER_BLOCK>(
             model->experts[eid].gate_proj,
             model->experts[eid].up_proj,
             input,
@@ -79,7 +79,7 @@ struct FFN2Executor {
         bool is_lane0 = (threadIdx.x % 32 == 0);
 
         if (is_lane0) tracer.start(TR_GEMV_DOWN, pending);
-        flashmoe::gemv_tile_accumulate_mixed_prefetch<T, 128>(
+        flashmoe::gemv_tile_accumulate_mixed_prefetch<T, constants::THREADS_PER_BLOCK>(
             model->experts[eid].down_proj, act, output,
             constants::MOE_INTERMEDIATE_SIZE,
             task.row_begin, task.row_count,

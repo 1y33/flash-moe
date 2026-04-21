@@ -32,14 +32,17 @@ template <int capacity>
 struct TaskQueue
 {
     Task entry[capacity];
+    int slot_ready[capacity]; // 0=empty, 1=written — per-slot visibility flag
     int head;
     int tail;
 
     __device__ __forceinline__ bool push(Task t)
     {
         int idx = atomicAdd(&head, 1);
-        entry[idx & (capacity - 1)] = t;
+        int slot = idx & (capacity - 1);
+        entry[slot] = t;
         __threadfence();
+        atomicExch(&slot_ready[slot], 1);
         return true;
     }
 
@@ -48,6 +51,9 @@ struct TaskQueue
         int h = atomicAdd(&head, 0);
         if (tail >= h)
             return false;
+        int slot = tail & (capacity - 1);
+        while (atomicAdd(&slot_ready[slot], 0) == 0) { } // wait for producer
+        atomicExch(&slot_ready[slot], 0); // reset for reuse
         *out_idx = tail;
         tail++;
         return true;
