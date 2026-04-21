@@ -11,14 +11,12 @@
 #include <cuda_fp16.h>
 #include "../csrc/kernel.cu"
 
-// ─── Storage type: change this to switch precision ──────────
 #ifndef MODEL_TYPE_FP32
 using ModelT = __half;
 #else
 using ModelT = float;
 #endif
 
-// Helper: fill host buffer with random floats, convert to T
 template <typename T>
 static void fill_random_typed(T *dst, size_t count) {
     for (size_t i = 0; i < count; i++)
@@ -31,7 +29,6 @@ void fill_random_typed<__half>(__half *dst, size_t count) {
         dst[i] = __float2half((float)rand() / (float)RAND_MAX - 0.5f);
 }
 
-// Helper: allocate host, fill, copy to device, free host
 template <typename T>
 static void init_random_device(T *d_ptr, size_t count) {
     T *h_ptr = (T*)malloc(count * sizeof(T));
@@ -97,9 +94,31 @@ int main() {
     tracer.max_events = 32768;
     TraceBuffer::allocate(&tracer.buf, &tracer.count, tracer.max_events);
 
-    printf("Launching kernel...\n");
+    // Warmup
     flash_moe_kernel<ModelT><<<C::BLOCKSIZE, C::THREADS_PER_BLOCK>>>(
         model, state, task_queue, doorbells, status_queue, tracer);
+    cudaDeviceSynchronize();
+
+    // Reset state for timed run
+    cudaMemset(state.output, 0, C::HIDDEN_SIZE * sizeof(float));
+    cudaMemset(state.ffn1_out, 0, C::TOP_K * C::MOE_INTERMEDIATE_SIZE * sizeof(float));
+    CudaAllocator::copy_to_device(ffn1_init, state.ffn1_done, C::TOP_K);
+    cudaMemset(task_queue, 0, sizeof(TaskQueue<C::CAPACITY>));
+    cudaMemset(doorbells, 0, C::NUM_WORKERS * sizeof(Doorbell));
+    cudaMemset(status_queue, 0, C::NUM_WORKERS * sizeof(int));
+    TraceBuffer::free(tracer.buf, tracer.count);
+    TraceBuffer::allocate(&tracer.buf, &tracer.count, tracer.max_events);
+
+    // Timed run
+    cudaEvent_t t0, t1;
+    cudaEventCreate(&t0);
+    cudaEventCreate(&t1);
+
+    printf("Launching kernel...\n");
+    cudaEventRecord(t0);
+    flash_moe_kernel<ModelT><<<C::BLOCKSIZE, C::THREADS_PER_BLOCK>>>(
+        model, state, task_queue, doorbells, status_queue, tracer);
+    cudaEventRecord(t1);
 
     cudaError_t err = cudaDeviceSynchronize();
     if (err != cudaSuccess) {
@@ -120,9 +139,15 @@ int main() {
     printf("Output[0..4]: %.6f %.6f %.6f %.6f %.6f\n",
            h_output[0], h_output[1], h_output[2], h_output[3], h_output[4]);
 
+    float kernel_ms = 0;
+    cudaEventElapsedTime(&kernel_ms, t0, t1);
+    cudaEventDestroy(t0);
+    cudaEventDestroy(t1);
+
     bool nonzero = norm > 1e-6f;
     printf("\n%s (output is %s)\n", nonzero ? "PASS" : "FAIL",
            nonzero ? "nonzero" : "all zeros — something went wrong");
+    printf("Kernel time: %.4f ms\n", kernel_ms);
 
     // Print trace + write JSON for viewer
     TraceBuffer::print(tracer.buf, tracer.count, trace_label_names(), TR_NUM_LABELS);

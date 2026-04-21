@@ -184,6 +184,15 @@ __global__ void kern_gate_up_fused_smem(
     gemv_tile_fused_gate_up_smem<float, TPB, ILP>(A_gate, A_up, x, y_gate, y_up, smem, N, row_begin, row_count);
 }
 
+template <int TPB, int ILP>
+__global__ void kern_gate_up_fused_prefetch(
+    const float *A_gate, const float *A_up, const float *x,
+    float *y_gate, float *y_up,
+    int N, int row_begin, int row_count)
+{
+    flashmoe::gemv_tile_fused_gate_up_prefetch<float, TPB, ILP>(A_gate, A_up, x, y_gate, y_up, N, row_begin, row_count);
+}
+
 // ─── CPU reference ──────────────────────────────────────────
 
 static void gemv_cpu(const float *A, const float *x, float *y,
@@ -359,6 +368,10 @@ int main()
     bench_fused("fused ILP=4 + smem x", M, N, tile,
         [=](float *Ag, float *Au, float *x, float *yg, float *yu, int N, int rb, int rc)
         { kern_gate_up_fused_smem<128,4><<<1,128,smem_bytes>>>(Ag, Au, x, yg, yu, N, rb, rc); }, nruns);
+
+    bench_fused("fused ILP=4 prefetch", M, N, tile,
+        [](float *Ag, float *Au, float *x, float *yg, float *yu, int N, int rb, int rc)
+        { kern_gate_up_fused_prefetch<128,4><<<1,128>>>(Ag, Au, x, yg, yu, N, rb, rc); }, nruns);
 
     bench_fused("fused ILP=2 + smem x", M, N, tile,
         [=](float *Ag, float *Au, float *x, float *yg, float *yu, int N, int rb, int rc)

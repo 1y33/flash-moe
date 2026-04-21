@@ -52,20 +52,6 @@ struct BootStrap
 
 struct Scheduler
 {
-
-    static __device__ __forceinline__ int find_ready_worker(int *status_queue, int num_workers)
-    {
-        while (true)
-        {
-            for (int w = 0; w < num_workers; w++)
-            {
-                int old = atomicExch(&status_queue[w], PROC_BUSY);
-                if (old == PROC_READY)
-                    return w;
-            }
-        }
-    }
-
     static __device__ __forceinline__ void assign_task(int worker_id, int task_idx,
                                                        Doorbell *doorbells)
     {
@@ -83,6 +69,21 @@ struct Scheduler
         atomicExch(&doorbells[worker_id].ready, 2);
     }
 
+    static __device__ __forceinline__ int find_ready_worker(int *status_queue, int num_workers, int &next_w)
+    {
+        while (true)
+        {
+            for (int attempt = 0; attempt < num_workers; attempt++)
+            {
+                int w = next_w;
+                next_w = (next_w + 1) % num_workers;
+                int old = atomicExch(&status_queue[w], PROC_BUSY);
+                if (old == PROC_READY)
+                    return w;
+            }
+        }
+    }
+
     static __device__ __forceinline__ void run(TaskQueue<constants::CAPACITY> *task_queue,
                                                Doorbell *doorbells,
                                                int *status_queue,
@@ -91,6 +92,7 @@ struct Scheduler
                                                DeviceTracer &tracer, long long *pending)
     {
         int scheduled = 0;
+        int next_w = 0;
 
         tracer.start(TR_SCHEDULE, pending);
         while (scheduled < total_tasks)
@@ -99,7 +101,7 @@ struct Scheduler
             if (!task_queue->pop(&task_idx))
                 continue;
 
-            int w = find_ready_worker(status_queue, num_workers);
+            int w = find_ready_worker(status_queue, num_workers, next_w);
             assign_task(w, task_idx, doorbells);
             scheduled++;
         }
@@ -133,6 +135,7 @@ struct OS
 
         if (threadIdx.x == 0)
             bootstrap_done = 0;
+        __syncthreads();
 
         // Outer ROUTE group span
         if (is_lane0) tracer.start(TR_ROUTE, pending);
@@ -167,9 +170,7 @@ struct OS
         }
         else if (warp_id == 1 && threadIdx.x == 32)
         {
-            while (atomicAdd(&bootstrap_done, 0) == 0)
-            {
-            }
+            while (atomicAdd(&bootstrap_done, 0) == 0) { }
             Scheduler::run(task_queue, doorbells, status_queue,
                            num_workers, total_tasks, tracer, pending);
         }
