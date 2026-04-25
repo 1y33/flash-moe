@@ -4,7 +4,7 @@
 #include "utils/allocator.cuh"
 #include "queue.cu"
 
-template <typename T>
+template <typename T, typename AccT>
 void launch_flash_moe(T *input, float *output, FlashMoe<T> &model);
 
 torch::Tensor flash_moe_forward(
@@ -14,7 +14,6 @@ torch::Tensor flash_moe_forward(
     std::vector<torch::Tensor> up_projs,
     std::vector<torch::Tensor> down_projs)
 {
-    // Output is always fp32
     auto output = torch::zeros({constants::HIDDEN_SIZE},
         torch::TensorOptions().dtype(torch::kFloat32).device(input.device()));
 
@@ -26,7 +25,7 @@ torch::Tensor flash_moe_forward(
             model.experts[e].up_proj   = reinterpret_cast<__half*>(up_projs[e].data_ptr<at::Half>());
             model.experts[e].down_proj = reinterpret_cast<__half*>(down_projs[e].data_ptr<at::Half>());
         }
-        launch_flash_moe(
+        launch_flash_moe<__half, __half>(
             reinterpret_cast<__half*>(input.data_ptr<at::Half>()),
             output.data_ptr<float>(), model);
     } else {
@@ -37,7 +36,7 @@ torch::Tensor flash_moe_forward(
             model.experts[e].up_proj   = up_projs[e].data_ptr<float>();
             model.experts[e].down_proj = down_projs[e].data_ptr<float>();
         }
-        launch_flash_moe(input.data_ptr<float>(), output.data_ptr<float>(), model);
+        launch_flash_moe<float, float>(input.data_ptr<float>(), output.data_ptr<float>(), model);
     }
 
     return output;

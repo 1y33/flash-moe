@@ -4,10 +4,11 @@
 #include "os.cu"
 #include "worker.cu"
 
-template <typename T>
-__global__ void flash_moe_kernel(
+template <typename T, typename AccT>
+__global__ __launch_bounds__(constants::THREADS_PER_BLOCK)
+void flash_moe_kernel(
     FlashMoe<T> model,
-    MoeState<T> state,
+    MoeState<T, AccT> state,
     TaskQueue<constants::CAPACITY> *task_queue,
     Doorbell *doorbells,
     int *status_queue,
@@ -24,25 +25,25 @@ __global__ void flash_moe_kernel(
     else
     {
         int worker_id = blockIdx.x - 1;
-        Worker<T>::run(worker_id, &model,
+        Worker<T, AccT>::run(worker_id, &model,
                        state.input, state.ffn1_out, state.output,
                        task_queue, doorbells, status_queue, state.ffn1_done, tracer, trace_pending);
     }
 }
 
-template <typename T>
+template <typename T, typename AccT>
 void launch_flash_moe(T *input, float *output, FlashMoe<T> &model)
 {
     namespace C = constants;
 
-    MoeState<T> state;
+    MoeState<T, AccT> state;
     state.input = input;
     state.output = output;
 
     CudaAllocator::allocate(&state.ffn1_out, C::TOP_K * C::MOE_INTERMEDIATE_SIZE);
     CudaAllocator::allocate(&state.ffn1_done, C::TOP_K);
 
-    cudaMemset(state.ffn1_out, 0, C::TOP_K * C::MOE_INTERMEDIATE_SIZE * sizeof(float));
+    cudaMemset(state.ffn1_out, 0, C::TOP_K * C::MOE_INTERMEDIATE_SIZE * sizeof(AccT));
     cudaMemset(output, 0, C::HIDDEN_SIZE * sizeof(float));
 
     int ffn1_init[C::TOP_K];
@@ -67,7 +68,7 @@ void launch_flash_moe(T *input, float *output, FlashMoe<T> &model)
     tracer.max_events = 32768;
     TraceBuffer::allocate(&tracer.buf, &tracer.count, tracer.max_events);
 
-    flash_moe_kernel<T><<<C::BLOCKSIZE, C::THREADS_PER_BLOCK>>>(
+    flash_moe_kernel<T, AccT><<<C::BLOCKSIZE, C::THREADS_PER_BLOCK>>>(
         model, state, task_queue, doorbells, status_queue, tracer);
 
     cudaDeviceSynchronize();
@@ -83,5 +84,5 @@ void launch_flash_moe(T *input, float *output, FlashMoe<T> &model)
     CudaAllocator::free(status_queue);
 }
 
-template void launch_flash_moe<float>(float *, float *, FlashMoe<float> &);
-template void launch_flash_moe<__half>(__half *, float *, FlashMoe<__half> &);
+template void launch_flash_moe<float, float>(float *, float *, FlashMoe<float> &);
+template void launch_flash_moe<__half, __half>(__half *, float *, FlashMoe<__half> &);

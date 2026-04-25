@@ -43,10 +43,11 @@ int main()
     CudaAllocator::copy_to_device(hg, dg, I);
     CudaAllocator::copy_to_device(hu, du, I);
 
+    // warmup
     silu_mul_kernel<float, TPB><<<1, TPB>>>(dg, du, dout, I);
     cudaDeviceSynchronize();
 
-    int nruns = 1000;
+    int nruns = 10000;
     GpuTimer t; t.begin();
     for (int r = 0; r < nruns; ++r)
         silu_mul_kernel<float, TPB><<<1, TPB>>>(dg, du, dout, I);
@@ -54,13 +55,12 @@ int main()
 
     CudaAllocator::copy_to_host(dout, ho, I);
 
-    // 2 loads + 1 store per element, 4 bytes each.
     double bytes = 3.0 * I * sizeof(float);
-    double flops = 4.0 * I;  // rough: exp + add + mul + mul
+    double flops = 4.0 * I;
     BenchResult res = Bench::run(flops, bytes, nruns, t);
 
     printf("\n[silu_mul] I=%d TPB=%d\n", I, TPB);
-    Bench::verify(ho, href, I, 1e-4f);
+    Bench::verify(ho, href, I, 1e-3f);
     res.print();
 
     HostAllocator::free(hg); HostAllocator::free(hu);

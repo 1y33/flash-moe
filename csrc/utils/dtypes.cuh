@@ -14,7 +14,12 @@ struct DType<float>
     static constexpr int VEC = 4;
     using vec_t = float4;
 
-    // vector
+    __device__ __forceinline__ static float to_float(float v) { return v; }
+    __device__ __forceinline__ static float from_float(float v) { return v; }
+
+    __device__ __forceinline__ static float load(const float *ptr) { return *ptr; }
+    __device__ __forceinline__ static void store(float *ptr, float v) { *ptr = v; }
+
     __device__ __forceinline__ static void load_vec(const float *ptr, float out[VEC])
     {
         float4 v = reinterpret_cast<const float4 *>(ptr)[0];
@@ -30,29 +35,26 @@ struct DType<float>
         reinterpret_cast<float4 *>(ptr)[0] = v;
     }
 
-    // scalar
-    __device__ __forceinline__ static float load(const float *ptr) { return *ptr; }
-
-    __device__ __forceinline__ static void store(float *ptr, float v) { *ptr = v; }
-
-    // dot of two loaded vectors
     __device__ __forceinline__ static float dot(const float a[VEC], const float b[VEC])
     {
         return a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3];
     }
 };
 
-
 template <>
 struct DType<__half>
 {
     using store_t = __half;
     using compute_t = float;
-
     static constexpr int VEC = 8;
     using vec_t = uint4;
-    
-    // vector
+
+    __device__ __forceinline__ static float to_float(__half v) { return __half2float(v); }
+    __device__ __forceinline__ static __half from_float(float v) { return __float2half(v); }
+
+    __device__ __forceinline__ static float load(const __half *ptr) { return __half2float(*ptr); }
+    __device__ __forceinline__ static void store(__half *ptr, float v) { *ptr = __float2half(v); }
+
     __device__ __forceinline__ static void load_vec(const __half *ptr, float out[VEC])
     {
         uint4 v = reinterpret_cast<const uint4 *>(ptr)[0];
@@ -78,12 +80,6 @@ struct DType<__half>
         reinterpret_cast<uint4 *>(ptr)[0] =
             *reinterpret_cast<uint4 *>(pairs);
     }
-
-
-    //scalar
-    __device__ __forceinline__ static float load(const __half *ptr) { return __half2float(*ptr); }
-
-    __device__ __forceinline__ static void store(__half *ptr, float v) { *ptr = __float2half(v); }
 
     __device__ __forceinline__ static float dot(const float a[VEC], const float b[VEC])
     {

@@ -19,7 +19,7 @@ namespace flashmoe
 
         float my[PER_LANE];
         int my_idx[PER_LANE];
-#pragma unroll
+        #pragma unroll
         for (int p = 0; p < PER_LANE; ++p)
         {
             int idx = p * 32 + lane;
@@ -30,12 +30,12 @@ namespace flashmoe
         int top_ids[K];
         float top_logits[K];
 
-#pragma unroll
+        #pragma unroll
         for (int k = 0; k < K; ++k)
         {
             float local_val = -FLT_MAX;
             int local_idx = -1;
-#pragma unroll
+            #pragma unroll
             for (int p = 0; p < PER_LANE; ++p)
             {
                 if (my[p] > local_val)
@@ -61,24 +61,23 @@ namespace flashmoe
                 my[winner_p] = -FLT_MAX;
         }
 
-        // Softmax over K winners (lane 0 only)
         if (lane == 0)
         {
             float m = top_logits[0];
-#pragma unroll
+            #pragma unroll
             for (int k = 1; k < K; ++k)
                 m = fmaxf(m, top_logits[k]);
 
             float sum = 0.0f;
             float e[K];
-#pragma unroll
+            #pragma unroll
             for (int k = 0; k < K; ++k)
             {
                 e[k] = __expf(top_logits[k] - m);
                 sum += e[k];
             }
-            float inv = 1.0f / sum;
-#pragma unroll
+            float inv = __frcp_rn(sum);
+            #pragma unroll
             for (int k = 0; k < K; ++k)
             {
                 ids_out[k] = top_ids[k];

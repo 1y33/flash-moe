@@ -1,5 +1,6 @@
 #pragma once
 #include <cuda_runtime.h>
+#include <cuda_fp16.h>
 #include "utils/trace.cuh"
 
 
@@ -12,7 +13,6 @@ enum TraceLabel : int {
     TR_SCHEDULE,
     // Leaves (inner filled bars)
     TR_GEMV_GATE,
-    TR_GEMV_UP,
     TR_SILU_MUL,
     TR_GEMV_DOWN,
     TR_GEMV_ROUTE,
@@ -26,7 +26,7 @@ constexpr int TR_FIRST_LEAF = TR_GEMV_GATE;
 inline const char** trace_label_names() {
     static const char* names[] = {
         "WAIT", "FFN1", "FFN2", "ROUTE", "SCHEDULE",
-        "GEMV_GATE", "GEMV_UP", "SILU_MUL", "GEMV_DOWN",
+        "GEMV_GATE", "SILU_MUL", "GEMV_DOWN",
         "GEMV_ROUTE", "SOFTMAX_TOPK", "DISPATCH"
     };
     return names;
@@ -53,6 +53,7 @@ namespace constants
 #else
     constexpr int TILE_ROWS = TILE_ROWS_OVERRIDE;
 #endif
+
     constexpr int FFN1_TILES_PER_EXPERT = MOE_INTERMEDIATE_SIZE / TILE_ROWS;
     constexpr int FFN2_TILES_PER_EXPERT = (HIDDEN_SIZE + TILE_ROWS - 1) / TILE_ROWS;
 
@@ -82,11 +83,11 @@ struct FlashMoe
     T *router;
 };
 
-template <typename T>
+template <typename T, typename AccT = __half>
 struct MoeState
 {
     T     *input;       // [H] in storage type
-    float *output;      // [H] final result (always fp32, accumulate target)
-    float *ffn1_out;    // [TOP_K * I] intermediate activations (always fp32)
+    float *output;      // [H] accumulation target (always fp32)
+    AccT  *ffn1_out;    // [TOP_K * I] intermediate activations
     int   *ffn1_done;   // [TOP_K] fan-in counters
 };

@@ -52,7 +52,9 @@ struct TaskQueue
         if (tail >= h)
             return false;
         int slot = tail & (capacity - 1);
-        while (atomicAdd(&slot_ready[slot], 0) == 0) { } // wait for producer
+        while (atomicAdd(&slot_ready[slot], 0) == 0)
+        {
+        } // wait for producer
         atomicExch(&slot_ready[slot], 0); // reset for reuse
         *out_idx = tail;
         tail++;
