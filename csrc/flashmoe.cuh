@@ -3,8 +3,8 @@
 #include <cuda_fp16.h>
 #include "utils/trace.cuh"
 
-
-enum TraceLabel : int {
+enum TraceLabel : int
+{
     // Groups (outer spans)
     TR_WAIT,
     TR_FFN1,
@@ -23,12 +23,12 @@ enum TraceLabel : int {
 
 constexpr int TR_FIRST_LEAF = TR_GEMV_GATE;
 
-inline const char** trace_label_names() {
-    static const char* names[] = {
+inline const char **trace_label_names()
+{
+    static const char *names[] = {
         "WAIT", "FFN1", "FFN2", "ROUTE", "SCHEDULE",
         "GEMV_GATE", "SILU_MUL", "GEMV_DOWN",
-        "GEMV_ROUTE", "SOFTMAX_TOPK", "DISPATCH"
-    };
+        "GEMV_ROUTE", "SOFTMAX_TOPK", "DISPATCH"};
     return names;
 }
 
@@ -86,8 +86,10 @@ struct FlashMoe
 template <typename T, typename AccT = __half>
 struct MoeState
 {
-    T     *input;       // [H] in storage type
-    float *output;      // [H] accumulation target (always fp32)
-    AccT  *ffn1_out;    // [TOP_K * I] intermediate activations
-    int   *ffn1_done;   // [TOP_K] fan-in counters
+    T *input;         // [H] in storage type
+    float *output;    // [H] accumulation target (always fp32)
+    AccT *ffn1_out;   // [TOP_K * I] intermediate activations
+    int *ffn1_done;   // [TOP_K] fan-in counters
+    float *logits;    // [NUM_EXPERTS] router logits (global, all blocks write)
+    int *router_done; // atomic counter for router barrier
 };

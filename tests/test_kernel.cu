@@ -59,10 +59,14 @@ int main() {
     CudaAllocator::allocate(&state.output,   C::HIDDEN_SIZE);
     CudaAllocator::allocate(&state.ffn1_out, C::TOP_K * C::MOE_INTERMEDIATE_SIZE);
     CudaAllocator::allocate(&state.ffn1_done, C::TOP_K);
+    CudaAllocator::allocate(&state.logits, C::NUM_EXPERTS);
+    CudaAllocator::allocate(&state.router_done, 1);
 
     init_random_device(state.input, C::HIDDEN_SIZE);
     cudaMemset(state.output,   0, C::HIDDEN_SIZE * sizeof(float));
     cudaMemset(state.ffn1_out, 0, C::TOP_K * C::MOE_INTERMEDIATE_SIZE * sizeof(T));
+    cudaMemset(state.logits, 0, C::NUM_EXPERTS * sizeof(float));
+    cudaMemset(state.router_done, 0, sizeof(int));
 
     int ffn1_init[C::TOP_K];
     for (int i = 0; i < C::TOP_K; i++)
@@ -95,6 +99,8 @@ int main() {
     // Reset for timed run
     cudaMemset(state.output,   0, C::HIDDEN_SIZE * sizeof(float));
     cudaMemset(state.ffn1_out, 0, C::TOP_K * C::MOE_INTERMEDIATE_SIZE * sizeof(T));
+    cudaMemset(state.logits, 0, C::NUM_EXPERTS * sizeof(float));
+    cudaMemset(state.router_done, 0, sizeof(int));
     CudaAllocator::copy_to_device(ffn1_init, state.ffn1_done, C::TOP_K);
     cudaMemset(task_queue,   0, sizeof(TaskQueue<C::CAPACITY>));
     cudaMemset(doorbells,    0, C::NUM_WORKERS * sizeof(Doorbell));
@@ -153,6 +159,8 @@ int main() {
     CudaAllocator::free(state.output);
     CudaAllocator::free(state.ffn1_out);
     CudaAllocator::free(state.ffn1_done);
+    CudaAllocator::free(state.logits);
+    CudaAllocator::free(state.router_done);
     CudaAllocator::free(task_queue);
     CudaAllocator::free(doorbells);
     CudaAllocator::free(status_queue);
