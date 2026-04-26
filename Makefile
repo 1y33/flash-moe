@@ -12,7 +12,6 @@ all: test
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
 
-# --- CUDA unit tests ---
 
 KERNEL_DEPS = tests/test_kernel.cu csrc/kernel.cu csrc/os.cu csrc/worker.cu csrc/queue.cu csrc/flashmoe.cuh csrc/utils/allocator.cuh csrc/tasks/executor.cuh csrc/tasks/gemv.cuh csrc/tasks/gemv_ffn1.cuh csrc/tasks/gemv_ffn2.cuh csrc/tasks/silu_mul.cuh csrc/tasks/softmax_topk.cuh $(UTILS)
 
@@ -60,16 +59,10 @@ test_full_debug: $(BUILD_DIR)/test_full_debug
 
 test_cuda: test_kernel test_queue test_fanin test_scheduler test_full_debug
 
-# --- Python correctness test ---
-
 test_python:
 	python tests/test_correctness.py
 
-# --- Combined test target ---
-
 test: test_cuda test_python
-
-# --- Kernel micro-benchmarks ---
 
 $(BUILD_DIR)/test_softmax_topk: tests/test_softmax_topk.cu csrc/tasks/softmax_topk.cuh csrc/utils/allocator.cuh tests/bench.cuh $(UTILS) | $(BUILD_DIR)
 	$(NVCC) $(ARCH) -o $@ $<

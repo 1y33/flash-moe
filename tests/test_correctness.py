@@ -16,7 +16,7 @@ from benchmarks.vllm_utils import (
 )
 
 NUM_INPUTS = 20
-WARMUP     = 10
+WARMUP     = 50
 BENCH_ITER = 200
 ATOL       = 0.05
 
@@ -106,23 +106,26 @@ def benchmark_suite(ext, moe, vllm_config,
         torch.manual_seed(s)
         inputs.append(torch.randn(1, H, dtype=torch.float16, device="cuda"))
 
-    idx = [0]
+    vllm_idx = [0]
+    ours_idx = [0]
 
     def vllm_call():
-        x = inputs[idx[0] % len(inputs)]
-        idx[0] += 1
+        x = inputs[vllm_idx[0] % len(inputs)]
+        vllm_idx[0] += 1
         return run_vllm_forward(moe, x, vllm_config)
 
     def ours_call():
-        x = inputs[idx[0] % len(inputs)]
-        idx[0] += 1
+        x = inputs[ours_idx[0] % len(inputs)]
+        ours_idx[0] += 1
         return run_ours(ext, x.squeeze(0), router_weight,
                         gate_projs, up_projs, down_projs)
 
-    idx[0] = 0
+    torch.cuda.empty_cache()
+    vllm_idx[0] = 0
     vllm_ms = bench_ms(vllm_call)
 
-    idx[0] = 0
+    torch.cuda.empty_cache()
+    ours_idx[0] = 0
     ours_ms = bench_ms(ours_call)
 
     # Weight memory (read per forward)
