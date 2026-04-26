@@ -1,3 +1,5 @@
+// Trace library generated using CC :D
+//
 #pragma once
 #include <cuda_runtime.h>
 #include <cstdio>

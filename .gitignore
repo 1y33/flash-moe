@@ -31,3 +31,5 @@ Thumbs.db
 
 # Reference repos (not our code)
 flash-moe/
+notes/
+.claude/

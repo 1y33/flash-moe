@@ -10,6 +10,13 @@ namespace flashmoe
         return x / (1.0f + __expf(-x));
     }
 
+    // Fast silu using hardware reciprocal (__frcp_rn ~1 cycle vs fdiv ~16 cycles)
+    __device__ __forceinline__ float silu_fast(float x)
+    {
+        float e = __expf(-x);
+        return x * __frcp_rn(1.0f + e);
+    }
+
     template <typename T, int THREADS_PER_BLOCK = 128>
     __device__ __forceinline__ void silu_mul_tile(
         const T *__restrict__ gate,
@@ -29,7 +36,7 @@ namespace flashmoe
 
             #pragma unroll
             for (int i = 0; i < VEC; i++)
-                r[i] = silu(g[i]) * u[i];
+                r[i] = silu_fast(g[i]) * u[i];
 
             D::store_vec(out + j * VEC, r);
         }

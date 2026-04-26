@@ -3,7 +3,7 @@
 #include "flashmoe.cuh"
 #include "tasks/executor.cuh"
 
-template <typename T>
+template <typename T, typename AccT = __half>
 struct Worker
 {
     static __device__ __forceinline__ int wait_for_doorbell(int worker_id, Doorbell *doorbells)
@@ -29,7 +29,7 @@ struct Worker
     }
 
     static __device__ __forceinline__ void route_task(Task &task, FlashMoe<T> *model,
-                                                      T *input, float *ffn1_out, float *output,
+                                                      T *input, AccT *ffn1_out, float *output,
                                                       int *ffn1_done, TaskQueue<constants::CAPACITY> *task_queue,
                                                       DeviceTracer &tracer, long long *pending)
     {
@@ -38,33 +38,37 @@ struct Worker
         switch (task.type)
         {
 
-            case FFN1:
-            if (is_lane0) tracer.start(TR_FFN1, pending);
-            FFN1Executor<T>::execute(task, model, input, ffn1_out, tracer, pending);
+        case FFN1:
+            if (is_lane0)
+                tracer.start(TR_FFN1, pending);
+            FFN1Executor<T, AccT>::execute(task, model, input, ffn1_out, tracer, pending);
             __threadfence();
-            if (is_lane0) tracer.stop(TR_FFN1, pending);
+            if (is_lane0)
+                tracer.stop(TR_FFN1, pending);
             if (threadIdx.x == 0)
             {
-                if (FFN1Executor<T>::on_complete(task, ffn1_done))
-                    FFN1Executor<T>::push_next(task, task_queue);
+                if (FFN1Executor<T, AccT>::on_complete(task, ffn1_done))
+                    FFN1Executor<T, AccT>::push_next(task, task_queue);
             }
             break;
 
         case FFN2:
-            if (is_lane0) tracer.start(TR_FFN2, pending);
-            FFN2Executor<T>::execute(task, model, ffn1_out, output, tracer, pending);
+            if (is_lane0)
+                tracer.start(TR_FFN2, pending);
+            FFN2Executor<T, AccT>::execute(task, model, ffn1_out, output, tracer, pending);
             __threadfence();
-            if (is_lane0) tracer.stop(TR_FFN2, pending);
+            if (is_lane0)
+                tracer.stop(TR_FFN2, pending);
             if (threadIdx.x == 0)
             {
-                FFN2Executor<T>::on_complete(task);
+                FFN2Executor<T, AccT>::on_complete(task);
             }
             break;
         }
     }
 
     static __device__ __forceinline__ void run(int worker_id, FlashMoe<T> *model,
-                                               T *input, float *ffn1_out, float *output,
+                                               T *input, AccT *ffn1_out, float *output,
                                                TaskQueue<constants::CAPACITY> *task_queue,
                                                Doorbell *doorbells, int *status_queue, int *ffn1_done,
                                                DeviceTracer tracer, long long *pending)

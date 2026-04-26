@@ -11,7 +11,7 @@ struct BootStrap
                                                  int *expert_ids, float *expert_weights,
                                                  FlashMoe<T> *model)
     {
-        flashmoe::gemv_tile<T, 128>(
+        flashmoe::gemv_tile<T, constants::THREADS_PER_BLOCK>(
             model->router, input, logits,
             constants::HIDDEN_SIZE, 0, constants::NUM_EXPERTS);
     }
@@ -52,20 +52,6 @@ struct BootStrap
 
 struct Scheduler
 {
-
-    static __device__ __forceinline__ int find_ready_worker(int *status_queue, int num_workers)
-    {
-        while (true)
-        {
-            for (int w = 0; w < num_workers; w++)
-            {
-                int old = atomicExch(&status_queue[w], PROC_BUSY);
-                if (old == PROC_READY)
-                    return w;
-            }
-        }
-    }
-
     static __device__ __forceinline__ void assign_task(int worker_id, int task_idx,
                                                        Doorbell *doorbells)
     {
@@ -83,6 +69,21 @@ struct Scheduler
         atomicExch(&doorbells[worker_id].ready, 2);
     }
 
+    static __device__ __forceinline__ int find_ready_worker(int *status_queue, int num_workers, int &next_w)
+    {
+        while (true)
+        {
+            for (int attempt = 0; attempt < num_workers; attempt++)
+            {
+                int w = next_w;
+                next_w = (next_w + 1) % num_workers;
+                int old = atomicExch(&status_queue[w], PROC_BUSY);
+                if (old == PROC_READY)
+                    return w;
+            }
+        }
+    }
+
     static __device__ __forceinline__ void run(TaskQueue<constants::CAPACITY> *task_queue,
                                                Doorbell *doorbells,
                                                int *status_queue,
@@ -91,6 +92,7 @@ struct Scheduler
                                                DeviceTracer &tracer, long long *pending)
     {
         int scheduled = 0;
+        int next_w = 0;
 
         tracer.start(TR_SCHEDULE, pending);
         while (scheduled < total_tasks)
@@ -99,7 +101,7 @@ struct Scheduler
             if (!task_queue->pop(&task_idx))
                 continue;
 
-            int w = find_ready_worker(status_queue, num_workers);
+            int w = find_ready_worker(status_queue, num_workers, next_w);
             assign_task(w, task_idx, doorbells);
             scheduled++;
         }
@@ -115,7 +117,7 @@ struct Scheduler
 template <typename T>
 struct OS
 {
-    static __device__ __forceinline__ void run(T *input, FlashMoe<T> *model,
+    static __device__ __forceinline__ void run(float *logits, FlashMoe<T> *model,
                                                TaskQueue<constants::CAPACITY> *task_queue,
                                                Doorbell *doorbells,
                                                int *status_queue,
@@ -124,7 +126,6 @@ struct OS
                                                int total_tasks,
                                                DeviceTracer tracer, long long *pending)
     {
-        __shared__ float logits[constants::NUM_EXPERTS];
         __shared__ int expert_ids[constants::TOP_K];
         __shared__ float expert_weights[constants::TOP_K];
         __shared__ int bootstrap_done;
@@ -133,33 +134,28 @@ struct OS
 
         if (threadIdx.x == 0)
             bootstrap_done = 0;
-
-        // Outer ROUTE group span
-        if (is_lane0) tracer.start(TR_ROUTE, pending);
-
-        // Inner: GEMV_ROUTE
-        if (is_lane0) tracer.start(TR_GEMV_ROUTE, pending);
-        BootStrap<T>::route(input, logits, expert_ids, expert_weights, model);
         __syncthreads();
-        if (is_lane0) tracer.stop(TR_GEMV_ROUTE, pending);
+
+        if (is_lane0)
+            tracer.start(TR_ROUTE, pending);
 
         int warp_id = threadIdx.x / 32;
 
         if (warp_id == 0)
         {
-            // Inner: SOFTMAX_TOPK
-            if (threadIdx.x == 0) tracer.start(TR_SOFTMAX_TOPK, pending);
+            if (threadIdx.x == 0)
+                tracer.start(TR_SOFTMAX_TOPK, pending);
             BootStrap<T>::topk(logits, expert_ids, expert_weights);
             __syncwarp();
-            if (threadIdx.x == 0) tracer.stop(TR_SOFTMAX_TOPK, pending);
+            if (threadIdx.x == 0)
+                tracer.stop(TR_SOFTMAX_TOPK, pending);
 
-            // Inner: DISPATCH
-            if (threadIdx.x == 0) tracer.start(TR_DISPATCH, pending);
+            if (threadIdx.x == 0)
+                tracer.start(TR_DISPATCH, pending);
             BootStrap<T>::dispatch(task_queue, expert_ids, expert_weights);
             if (threadIdx.x == 0)
             {
                 tracer.stop(TR_DISPATCH, pending);
-                // Close outer ROUTE group
                 tracer.stop(TR_ROUTE, pending);
                 __threadfence();
                 atomicExch(&bootstrap_done, 1);
