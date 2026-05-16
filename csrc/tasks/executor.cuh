@@ -49,29 +49,11 @@ struct FFN1Executor
             tracer.stop(TR_SILU_MUL, pending);
     }
 
-    static __device__ __forceinline__ bool on_complete(Task &task, int *ffn1_done)
+    // Decrements the fan-in counter. FFN2 workers spin on this counter
+    // hitting 0 before they read activations.
+    static __device__ __forceinline__ void on_complete(Task &task, int *ffn1_done)
     {
-        return atomicSub(&ffn1_done[task.slot], 1) == 1;
-    }
-
-    static __device__ __forceinline__ void push_next(Task &task, TaskQueue<constants::CAPACITY> *task_queue)
-    {
-        int rows_left = constants::HIDDEN_SIZE;
-        int row = 0;
-        while (rows_left > 0)
-        {
-            int chunk = min(constants::TILE_ROWS, rows_left);
-            Task t;
-            t.expert_id = task.expert_id;
-            t.weight = task.weight;
-            t.type = FFN2;
-            t.row_begin = row;
-            t.row_count = chunk;
-            t.slot = task.slot;
-            task_queue->push(t);
-            row += chunk;
-            rows_left -= chunk;
-        }
+        atomicSub(&ffn1_done[task.slot], 1);
     }
 };
 
@@ -80,11 +62,24 @@ struct FFN2Executor
 {
     static __device__ __forceinline__ void execute(Task &task, FlashMoe<T> *model,
                                                    AccT *ffn1_out, float *output,
+                                                   int *ffn1_done,
                                                    DeviceTracer &tracer, long long *pending)
     {
         int eid = task.expert_id;
         AccT *act = ffn1_out + task.slot * constants::MOE_INTERMEDIATE_SIZE;
         bool is_lane0 = (threadIdx.x % 32 == 0);
+
+        // Wait until all FFN1 tiles for this slot have completed. Since FFN2
+        // tasks are pre-pushed by the bootstrap dispatcher, a worker may pick
+        // one up before its activations are ready.
+        if (threadIdx.x == 0)
+        {
+            while (atomicAdd(&ffn1_done[task.slot], 0) != 0)
+            {
+            }
+            __threadfence();
+        }
+        __syncthreads();
 
         if (is_lane0)
             tracer.start(TR_GEMV_DOWN, pending);

@@ -102,7 +102,7 @@ namespace flashmoe
                 {
                     acc[i] = warp::reduce_sum(acc[i]);
                     if (lane == 0)
-                        y[row_begin + r_base + i] += scale * acc[i];
+                        atomicAdd(&y[row_begin + r_base + i], scale * acc[i]);
                 }
             }
         }

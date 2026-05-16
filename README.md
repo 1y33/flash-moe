@@ -87,8 +87,7 @@ vLLM needs 9 separate kernel launches per MoE forward pass (topkGating, moe_alig
 
 ### Benchmarking learnings
 
-- Battery vs charger gives different results because the charger triggers SW Thermal Slowdown and SW Power Capping, throttling the GPU differently for each kernel.
-- Unlocked clocks are unreliable. Whichever kernel runs first gets the higher boost, the second runs on a warmer GPU.
-- Lock the GPU clock (`nvidia-smi -lgc 2700,2700`) for reproducible results. Picked 2700 MHz because 3105 max is not thermally sustainable on a laptop.
+- Battery vs charger gives different results. vLLM went from 0.628ms to 0.342ms while ours barely changed (0.493 to 0.413ms).
+- Lock the GPU clock (`nvidia-smi -lgc 2700,2700`) for reproducible results.
 - More warmup (50 instead of 10) to reach thermal steady state before measuring.
 - Separate state per benchmark. Fixed a shared input counter bug and added `torch.cuda.empty_cache()` between runs.

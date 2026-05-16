@@ -22,119 +22,80 @@ struct BootStrap
             logits, expert_ids, expert_weights);
     }
 
+    // Warp-parallel dispatch. Total tasks = TOP_K * (FFN1_TILES + FFN2_TILES).
+    // FFN1 tasks come first (indices [0, TOP_K*FFN1_TILES_PER_EXPERT)), then FFN2.
+    // All 32 lanes of warp 0 push in parallel; each does ~6 round-trips.
+    // Each task's queue slot is determined by its global task index, so we
+    // don't need a contended atomicAdd on head — we set head = total at the end.
     static __device__ __forceinline__ void dispatch(TaskQueue<constants::CAPACITY> *task_queue,
                                                     int *expert_ids, float *expert_weights)
     {
-        if (threadIdx.x == 0)
+        constexpr int FFN1_TASKS = constants::TOP_K * constants::FFN1_TILES_PER_EXPERT;
+        constexpr int FFN2_TASKS = constants::TOP_K * constants::FFN2_TILES_PER_EXPERT;
+        constexpr int TOTAL = FFN1_TASKS + FFN2_TASKS;
+
+        const int lane = threadIdx.x & 31;
+
+        for (int i = lane; i < TOTAL; i += 32)
         {
-            for (int k = 0; k < constants::TOP_K; k++)
+            Task t;
+            if (i < FFN1_TASKS)
             {
-                int rows_left = constants::MOE_INTERMEDIATE_SIZE;
-                int row = 0;
-                while (rows_left > 0)
-                {
-                    int chunk = min(constants::TILE_ROWS, rows_left);
-                    Task t;
-                    t.expert_id = expert_ids[k];
-                    t.weight = expert_weights[k];
-                    t.type = FFN1;
-                    t.row_begin = row;
-                    t.row_count = chunk;
-                    t.slot = k;
-                    task_queue->push(t);
-                    row += chunk;
-                    rows_left -= chunk;
-                }
+                int k = i / constants::FFN1_TILES_PER_EXPERT;
+                int tile = i % constants::FFN1_TILES_PER_EXPERT;
+                t.expert_id = expert_ids[k];
+                t.weight = expert_weights[k];
+                t.type = FFN1;
+                t.row_begin = tile * constants::TILE_ROWS;
+                int rows_left = constants::MOE_INTERMEDIATE_SIZE - t.row_begin;
+                t.row_count = rows_left < constants::TILE_ROWS ? rows_left : constants::TILE_ROWS;
+                t.slot = k;
             }
+            else
+            {
+                int j = i - FFN1_TASKS;
+                int k = j / constants::FFN2_TILES_PER_EXPERT;
+                int tile = j % constants::FFN2_TILES_PER_EXPERT;
+                t.expert_id = expert_ids[k];
+                t.weight = expert_weights[k];
+                t.type = FFN2;
+                t.row_begin = tile * constants::TILE_ROWS;
+                int rows_left = constants::HIDDEN_SIZE - t.row_begin;
+                t.row_count = rows_left < constants::TILE_ROWS ? rows_left : constants::TILE_ROWS;
+                t.slot = k;
+            }
+
+            int slot = i & (constants::CAPACITY - 1);
+            task_queue->entry[slot] = t;
+            __threadfence();
+            atomicExch(&task_queue->slot_ready[slot], 1);
+        }
+
+        __syncwarp();
+        if (lane == 0)
+        {
+            // Make all tasks visible to the scheduler. head is read with
+            // atomicAdd(0) in pop(), so a normal store with threadfence is fine.
+            __threadfence();
+            atomicExch(&task_queue->head, TOTAL);
         }
     }
 };
 
-struct Scheduler
-{
-    static __device__ __forceinline__ void assign_task(int worker_id, int task_idx,
-                                                       Doorbell *doorbells)
-    {
-        doorbells[worker_id].task_idx = task_idx;
-        __threadfence();
-        atomicExch(&doorbells[worker_id].ready, 1);
-    }
-
-    static __device__ __forceinline__ void send_exit(int worker_id, int *status_queue,
-                                                     Doorbell *doorbells)
-    {
-        while (atomicExch(&status_queue[worker_id], PROC_BUSY) != PROC_READY)
-        {
-        }
-        atomicExch(&doorbells[worker_id].ready, 2);
-    }
-
-    static __device__ __forceinline__ int find_ready_worker(int *status_queue, int num_workers, int &next_w)
-    {
-        while (true)
-        {
-            for (int attempt = 0; attempt < num_workers; attempt++)
-            {
-                int w = next_w;
-                next_w = (next_w + 1) % num_workers;
-                int old = atomicExch(&status_queue[w], PROC_BUSY);
-                if (old == PROC_READY)
-                    return w;
-            }
-        }
-    }
-
-    static __device__ __forceinline__ void run(TaskQueue<constants::CAPACITY> *task_queue,
-                                               Doorbell *doorbells,
-                                               int *status_queue,
-                                               int num_workers,
-                                               int total_tasks,
-                                               DeviceTracer &tracer, long long *pending)
-    {
-        int scheduled = 0;
-        int next_w = 0;
-
-        tracer.start(TR_SCHEDULE, pending);
-        while (scheduled < total_tasks)
-        {
-            int task_idx;
-            if (!task_queue->pop(&task_idx))
-                continue;
-
-            int w = find_ready_worker(status_queue, num_workers, next_w);
-            assign_task(w, task_idx, doorbells);
-            scheduled++;
-        }
-        tracer.stop(TR_SCHEDULE, pending);
-
-        for (int w = 0; w < num_workers; w++)
-        {
-            send_exit(w, status_queue, doorbells);
-        }
-    }
-};
-
+// Worker self-dispatch: no Scheduler needed. The OS block just does topk +
+// warp-parallel dispatch and exits. Workers (blocks 1..BLOCKSIZE-1) pull tasks
+// from the queue directly via atomicAdd(&tail, 1).
 template <typename T>
 struct OS
 {
     static __device__ __forceinline__ void run(float *logits, FlashMoe<T> *model,
                                                TaskQueue<constants::CAPACITY> *task_queue,
-                                               Doorbell *doorbells,
-                                               int *status_queue,
-                                               int *ffn1_done,
-                                               int num_workers,
-                                               int total_tasks,
                                                DeviceTracer tracer, long long *pending)
     {
         __shared__ int expert_ids[constants::TOP_K];
         __shared__ float expert_weights[constants::TOP_K];
-        __shared__ int bootstrap_done;
 
         bool is_lane0 = (threadIdx.x % 32 == 0);
-
-        if (threadIdx.x == 0)
-            bootstrap_done = 0;
-        __syncthreads();
 
         if (is_lane0)
             tracer.start(TR_ROUTE, pending);
@@ -157,17 +118,8 @@ struct OS
             {
                 tracer.stop(TR_DISPATCH, pending);
                 tracer.stop(TR_ROUTE, pending);
-                __threadfence();
-                atomicExch(&bootstrap_done, 1);
             }
         }
-        else if (warp_id == 1 && threadIdx.x == 32)
-        {
-            while (atomicAdd(&bootstrap_done, 0) == 0)
-            {
-            }
-            Scheduler::run(task_queue, doorbells, status_queue,
-                           num_workers, total_tasks, tracer, pending);
-        }
+        // No scheduler — OS block exits after dispatch.
     }
 };
