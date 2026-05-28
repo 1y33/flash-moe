@@ -41,10 +41,10 @@ struct TaskQueue
         int idx = atomicAdd(&head, 1);
         int slot = idx & (capacity - 1);
         entry[slot] = t;
-        
+
         __threadfence();
         atomicExch(&slot_ready[slot], 1);
-        
+
         return true;
     }
 
@@ -53,7 +53,7 @@ struct TaskQueue
         int h = atomicAdd(&head, 0);
         if (tail >= h)
             return false;
-            
+
         int slot = tail & (capacity - 1);
         while (atomicAdd(&slot_ready[slot], 0) == 0)
         {

@@ -7,7 +7,9 @@ template <typename T, typename AccT = __half>
 struct Worker
 {
     static __device__ __forceinline__ void route_task(Task &task, FlashMoe<T> *model,
-                                                      T *input, AccT *ffn1_out, float *output,
+                                                      T *input,
+                                                      AccT *ffn1_out,
+                                                      float *output,
                                                       int *ffn1_done,
                                                       DeviceTracer &tracer, long long *pending)
     {
@@ -44,7 +46,6 @@ struct Worker
     }
 
     // Self-dispatch: workers claim tasks from the queue directly.
-    // No scheduler, no doorbells, no status_queue.
     static __device__ __forceinline__ void run(int worker_id, FlashMoe<T> *model,
                                                T *input, AccT *ffn1_out, float *output,
                                                TaskQueue<constants::CAPACITY> *task_queue,
@@ -61,16 +62,15 @@ struct Worker
             if (threadIdx.x == 0)
             {
                 tracer.start(TR_WAIT, pending);
-                // Claim a task index. If past end, we're done.
+                
                 int idx = atomicAdd(&task_queue->tail, 1);
                 my_idx = idx;
                 if (idx < total_tasks)
                 {
                     int slot = idx & (constants::CAPACITY - 1);
-                    // Spin until the producer (BootStrap::dispatch) has published
-                    // this slot. With warp-parallel dispatch all slots become
-                    // ready within a handful of cycles, so this rarely spins.
-                    while (atomicAdd(&task_queue->slot_ready[slot], 0) == 0) {}
+                    while (atomicAdd(&task_queue->slot_ready[slot], 0) == 0)
+                    {
+                    }
                     current_task = task_queue->entry[slot];
                 }
                 tracer.stop(TR_WAIT, pending);
