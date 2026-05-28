@@ -35,13 +35,41 @@ inline const char **trace_label_names()
 namespace constants
 {
 
+#ifndef BLOCKSIZE_OVERRIDE
     constexpr int BLOCKSIZE = 46;
-    constexpr int CAPACITY = 512;
-    constexpr int HIDDEN_SIZE = 2048;
+#else
+    constexpr int BLOCKSIZE = BLOCKSIZE_OVERRIDE;
+#endif
 
+#ifndef CAPACITY_OVERRIDE
+    constexpr int CAPACITY = 512;
+#else
+    constexpr int CAPACITY = CAPACITY_OVERRIDE;
+#endif
+
+#ifndef HIDDEN_SIZE_OVERRIDE
+    constexpr int HIDDEN_SIZE = 2048;
+#else
+    constexpr int HIDDEN_SIZE = HIDDEN_SIZE_OVERRIDE;
+#endif
+
+#ifndef MOE_INTERMEDIATE_SIZE_OVERRIDE
     constexpr int MOE_INTERMEDIATE_SIZE = 768;
+#else
+    constexpr int MOE_INTERMEDIATE_SIZE = MOE_INTERMEDIATE_SIZE_OVERRIDE;
+#endif
+
+#ifndef NUM_EXPERTS_OVERRIDE
     constexpr int NUM_EXPERTS = 128;
+#else
+    constexpr int NUM_EXPERTS = NUM_EXPERTS_OVERRIDE;
+#endif
+
+#ifndef TOP_K_OVERRIDE
     constexpr int TOP_K = 8;
+#else
+    constexpr int TOP_K = TOP_K_OVERRIDE;
+#endif
 
     constexpr size_t GATE_PROJ_SIZE = HIDDEN_SIZE * MOE_INTERMEDIATE_SIZE;
     constexpr size_t UP_PROJ_SIZE = HIDDEN_SIZE * MOE_INTERMEDIATE_SIZE;
@@ -49,7 +77,7 @@ namespace constants
     constexpr size_t ROUTER_SIZE = HIDDEN_SIZE * NUM_EXPERTS;
 
 #ifndef TILE_ROWS_OVERRIDE
-    constexpr int TILE_ROWS = 96;
+    constexpr int TILE_ROWS = 128;
 #else
     constexpr int TILE_ROWS = TILE_ROWS_OVERRIDE;
 #endif

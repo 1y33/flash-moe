@@ -75,16 +75,8 @@ int main() {
 
     // Scheduling
     TaskQueue<C::CAPACITY> *task_queue;
-    Doorbell *doorbells;
-    int *status_queue;
-
     CudaAllocator::allocate(&task_queue, 1);
-    CudaAllocator::allocate(&doorbells, C::NUM_WORKERS);
-    CudaAllocator::allocate(&status_queue, C::NUM_WORKERS);
-
-    cudaMemset(task_queue,   0, sizeof(TaskQueue<C::CAPACITY>));
-    cudaMemset(doorbells,    0, C::NUM_WORKERS * sizeof(Doorbell));
-    cudaMemset(status_queue, 0, C::NUM_WORKERS * sizeof(int));
+    cudaMemset(task_queue, 0, sizeof(TaskQueue<C::CAPACITY>));
 
     // Trace
     DeviceTracer tracer;
@@ -93,7 +85,7 @@ int main() {
 
     // Warmup
     flash_moe_kernel<T, T><<<C::BLOCKSIZE, C::THREADS_PER_BLOCK>>>(
-        model, state, task_queue, doorbells, status_queue, tracer);
+        model, state, task_queue, tracer);
     cudaDeviceSynchronize();
 
     // Reset for timed run
@@ -102,9 +94,7 @@ int main() {
     cudaMemset(state.logits, 0, C::NUM_EXPERTS * sizeof(float));
     cudaMemset(state.router_done, 0, sizeof(int));
     CudaAllocator::copy_to_device(ffn1_init, state.ffn1_done, C::TOP_K);
-    cudaMemset(task_queue,   0, sizeof(TaskQueue<C::CAPACITY>));
-    cudaMemset(doorbells,    0, C::NUM_WORKERS * sizeof(Doorbell));
-    cudaMemset(status_queue, 0, C::NUM_WORKERS * sizeof(int));
+    cudaMemset(task_queue, 0, sizeof(TaskQueue<C::CAPACITY>));
     TraceBuffer::free(tracer.buf, tracer.count);
     TraceBuffer::allocate(&tracer.buf, &tracer.count, tracer.max_events);
 
@@ -116,7 +106,7 @@ int main() {
     printf("Launching kernel...\n");
     cudaEventRecord(t0);
     flash_moe_kernel<T, T><<<C::BLOCKSIZE, C::THREADS_PER_BLOCK>>>(
-        model, state, task_queue, doorbells, status_queue, tracer);
+        model, state, task_queue, tracer);
     cudaEventRecord(t1);
 
     cudaError_t err = cudaDeviceSynchronize();
@@ -162,8 +152,6 @@ int main() {
     CudaAllocator::free(state.logits);
     CudaAllocator::free(state.router_done);
     CudaAllocator::free(task_queue);
-    CudaAllocator::free(doorbells);
-    CudaAllocator::free(status_queue);
 
     return nonzero ? 0 : 1;
 }

@@ -24,6 +24,10 @@ torch_extensions/
 *.cubin
 *.fatbin
 *.ptx
+ptx_output/
+
+# Benchmark results (large, regenerable)
+benchmarks/results/
 
 # OS
 .DS_Store

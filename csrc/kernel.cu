@@ -11,8 +11,6 @@ void flash_moe_kernel(
     FlashMoe<T> model,
     MoeState<T, AccT> state,
     TaskQueue<constants::CAPACITY> *task_queue,
-    Doorbell *doorbells,
-    int *status_queue,
     DeviceTracer tracer)
 {
     namespace C = constants;
@@ -33,7 +31,7 @@ void flash_moe_kernel(
     if (is_lane0) tracer.stop(TR_GEMV_ROUTE, trace_pending);
 
     __syncthreads();
-    
+
     if (threadIdx.x == 0)
     {
         atomicAdd(state.router_done, 1);
@@ -48,16 +46,14 @@ void flash_moe_kernel(
 
     if (blockIdx.x == 0)
     {
-        OS<T>::run(state.logits, &model, task_queue, doorbells,
-                   status_queue, state.ffn1_done,
-                   C::NUM_WORKERS, C::TOTAL_TASKS, tracer, trace_pending);
+        OS<T>::run(state.logits, &model, task_queue, tracer, trace_pending);
     }
     else
     {
         int worker_id = blockIdx.x - 1;
         Worker<T, AccT>::run(worker_id, &model,
                        state.input, state.ffn1_out, state.output,
-                       task_queue, doorbells, status_queue, state.ffn1_done, tracer, trace_pending);
+                       task_queue, state.ffn1_done, tracer, trace_pending);
     }
 }
 
@@ -86,16 +82,8 @@ void launch_flash_moe(T *input, float *output, FlashMoe<T> &model)
     CudaAllocator::copy_to_device(ffn1_init, state.ffn1_done, C::TOP_K);
 
     TaskQueue<C::CAPACITY> *task_queue;
-    Doorbell *doorbells;
-    int *status_queue;
-
     CudaAllocator::allocate(&task_queue, 1);
-    CudaAllocator::allocate(&doorbells, C::NUM_WORKERS);
-    CudaAllocator::allocate(&status_queue, C::NUM_WORKERS);
-
     cudaMemset(task_queue, 0, sizeof(TaskQueue<C::CAPACITY>));
-    cudaMemset(doorbells, 0, C::NUM_WORKERS * sizeof(Doorbell));
-    cudaMemset(status_queue, 0, C::NUM_WORKERS * sizeof(int));
 
     // Trace buffer
     DeviceTracer tracer;
@@ -103,7 +91,7 @@ void launch_flash_moe(T *input, float *output, FlashMoe<T> &model)
     TraceBuffer::allocate(&tracer.buf, &tracer.count, tracer.max_events);
 
     flash_moe_kernel<T, AccT><<<C::BLOCKSIZE, C::THREADS_PER_BLOCK>>>(
-        model, state, task_queue, doorbells, status_queue, tracer);
+        model, state, task_queue, tracer);
 
     cudaDeviceSynchronize();
 
@@ -116,8 +104,6 @@ void launch_flash_moe(T *input, float *output, FlashMoe<T> &model)
     CudaAllocator::free(state.logits);
     CudaAllocator::free(state.router_done);
     CudaAllocator::free(task_queue);
-    CudaAllocator::free(doorbells);
-    CudaAllocator::free(status_queue);
 }
 
 template void launch_flash_moe<float, float>(float *, float *, FlashMoe<float> &);

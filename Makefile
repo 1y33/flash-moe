@@ -60,7 +60,8 @@ test_full_debug: $(BUILD_DIR)/test_full_debug
 test_cuda: test_kernel test_queue test_fanin test_scheduler test_full_debug
 
 test_python:
-	python tests/test_correctness.py
+	python -m benchmarks.sweep --models qwen3-30b-a3b --batches 1 \
+		--runners flashmoe,vllm --warmup 5 --iters 20
 
 test: test_cuda test_python
 

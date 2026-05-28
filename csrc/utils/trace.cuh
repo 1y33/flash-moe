@@ -19,7 +19,7 @@ struct TraceEvent {
     long long end;
 };
 
-constexpr int TRACE_MAX_WARPS = 4;
+constexpr int TRACE_MAX_WARPS = 8;
 
 struct DeviceTracer {
     TraceEvent* buf;
