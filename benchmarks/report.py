@@ -34,65 +34,49 @@ def group_by(results, *keys):
     return out
 
 
-def plot_latency_vs_batch(results, model_name, out_path):
-    by_runner = group_by([r for r in results if r.model_name == model_name],
-                          "runner")
-    if not by_runner:
-        return False
-
-    fig, ax = plt.subplots(figsize=(8, 5))
-    for (runner,), rs in sorted(by_runner.items()):
-        rs = sorted(rs, key=lambda r: r.batch_size)
-        xs = [r.batch_size for r in rs if r.error is None]
-        ys = [r.mean_ms for r in rs if r.error is None]
-        if not xs:
-            continue
-        ax.plot(xs, ys, marker="o", label=runner, linewidth=2)
-
-    ax.set_xscale("log", base=2)
-    ax.set_xlabel("Batch size")
-    ax.set_ylabel("Latency per forward (ms)")
-    ax.set_title(f"{model_name} — Latency vs Batch")
-    ax.grid(True, alpha=0.3)
-    ax.legend()
-    fig.tight_layout()
-    fig.savefig(out_path, dpi=120)
-    plt.close(fig)
-    return True
+_RUNNER_COLORS = {
+    "flashmoe":      "#e94560",   # red — ours
+    "vllm":          "#0f3460",   # deep blue
+    "pytorch-eager": "#9aa0a6",   # grey
+}
 
 
-def plot_speedup_vs_batch(results, model_name, baseline_runner, out_path):
-    """Plot speedup of every runner over baseline_runner for this model."""
+def plot_latency_bars(results, model_name, out_path):
+    """Grouped bar chart: x=batch size, bars per runner, y=latency (ms)."""
     rs = [r for r in results if r.model_name == model_name and r.error is None]
-    by_batch = group_by(rs, "batch_size")
-
-    speedups: dict[str, list[tuple[int, float]]] = defaultdict(list)
-    for (batch,), batch_rs in by_batch.items():
-        base = next((r for r in batch_rs if r.runner == baseline_runner), None)
-        if base is None:
-            continue
-        for r in batch_rs:
-            if r.runner == baseline_runner:
-                continue
-            if r.mean_ms > 0:
-                speedups[r.runner].append((batch, base.mean_ms / r.mean_ms))
-
-    if not speedups:
+    if not rs:
         return False
 
-    fig, ax = plt.subplots(figsize=(8, 5))
-    for runner, points in speedups.items():
-        points.sort()
-        xs, ys = zip(*points)
-        ax.plot(xs, ys, marker="s", label=f"{runner} vs {baseline_runner}",
-                linewidth=2)
-    ax.axhline(1.0, color="grey", linestyle="--", alpha=0.5)
-    ax.set_xscale("log", base=2)
-    ax.set_xlabel("Batch size")
-    ax.set_ylabel(f"Speedup over {baseline_runner}")
-    ax.set_title(f"{model_name} — Speedup vs {baseline_runner}")
-    ax.grid(True, alpha=0.3)
-    ax.legend()
+    batches = sorted({r.batch_size for r in rs})
+    runners = sorted({r.runner for r in rs})
+
+    lookup = {(r.runner, r.batch_size): r for r in rs}
+
+    n_runners = len(runners)
+    bar_width = 0.8 / max(n_runners, 1)
+    x_positions = list(range(len(batches)))
+
+    fig, ax = plt.subplots(figsize=(max(7, 1.6 * len(batches)), 5))
+
+    for i, runner in enumerate(runners):
+        means = [lookup[(runner, b)].mean_ms if (runner, b) in lookup else 0.0
+                 for b in batches]
+        xs = [p + (i - (n_runners - 1) / 2) * bar_width for p in x_positions]
+        color = _RUNNER_COLORS.get(runner, None)
+        ax.bar(xs, means, bar_width, label=runner,
+               color=color, edgecolor="black", linewidth=0.6)
+        for x, y in zip(xs, means):
+            if y > 0:
+                ax.text(x, y, f"{y:.3f}", ha="center", va="bottom",
+                        fontsize=9, fontweight="bold")
+
+    ax.set_xticks(x_positions)
+    ax.set_xticklabels([f"b={b}" for b in batches])
+    ax.set_ylabel("Latency per forward (ms)")
+    ax.set_title(f"{model_name} — Latency")
+    ax.grid(True, axis="y", alpha=0.3)
+    ax.legend(loc="upper left")
+    ax.set_axisbelow(True)
     fig.tight_layout()
     fig.savefig(out_path, dpi=120)
     plt.close(fig)
@@ -136,13 +120,8 @@ def main():
     plot_files = []
     for name in model_names:
         latency_path = plots_dir / f"latency_{name}.png"
-        if plot_latency_vs_batch(results, name, latency_path):
+        if plot_latency_bars(results, name, latency_path):
             plot_files.append(latency_path)
-
-        # Only plot speedup if vLLM ran for this model
-        speedup_path = plots_dir / f"speedup_{name}_vs_vllm.png"
-        if plot_speedup_vs_batch(results, name, "vllm", speedup_path):
-            plot_files.append(speedup_path)
 
     report = []
     report.append(f"# FlashMoE Benchmark Report — {metadata['run_id']}\n")
